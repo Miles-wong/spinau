@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import initialTasks from "./data/tasks.json";
 import Table from "./components/Table";
 import TaskModal from "./components/TaskModal";
@@ -62,19 +62,19 @@ export default function App() {
   }, [tasks]);
 
   // Open create modal
-  const openCreate = () => {
+  const openCreate = useCallback(() => {
     setEditingTask(null);
     setIsModalOpen(true);
-  };
+  }, []);
 
   // Open edit modal
-  const openEdit = (task) => {
+  const openEdit = useCallback((task) => {
     setEditingTask(task);
     setIsModalOpen(true);
-  };
+  }, []);
 
   // Save task (create/edit)
-  const handleSaveTask = (taskPayload) => {
+  const handleSaveTask = useCallback((taskPayload) => {
     setTasks((prev) => {
       const exists = prev.some((t) => t.id === taskPayload.id);
 
@@ -94,15 +94,15 @@ export default function App() {
     });
 
     setIsModalOpen(false);
-  };
+  }, []);
 
   // Delete
-  const handleDeleteTask = (taskId) => {
+  const handleDeleteTask = useCallback((taskId) => {
     if (!window.confirm("Delete this task?")) return;
 
     setTasks((prev) => prev.filter((t) => t.id !== taskId));
     showToast("Task deleted.");
-  };
+  }, []);
 
   return (
     <div className="App">

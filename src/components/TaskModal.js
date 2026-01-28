@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback, useMemo } from "react";
 import LoadEditor from "./LoadEditor";
 
 function parseISODate(d) {
@@ -26,6 +26,61 @@ export default function TaskModal({ isOpen, mode, initialTask, onClose, onSave }
   const [errors, setErrors] = useState({});
   const [workloadErrors, setWorkloadErrors] = useState({});
   const [info, setInfo] = useState("");
+
+  // ✅ 所有 hooks 必须在 early return 之前声明
+  const setField = useCallback((field, value) => {
+    setInfo("");
+    setTask((prev) => ({ ...prev, [field]: value }));
+  }, []);
+
+  const validate = useCallback(() => {
+    const e = {};
+    const we = {};
+
+    if (!task?.taskName?.trim?.()) e.taskName = "Task name required";
+
+    if (!isValidDate(task?.startDate)) e.startDate = "Valid start date required";
+    if (!isValidDate(task?.endDate)) e.endDate = "Valid end date required";
+
+    if (isValidDate(task?.startDate) && isValidDate(task?.endDate) && task.startDate > task.endDate) {
+      e.range = "Task start must be before end";
+    }
+
+    workloads.forEach((w, idx) => {
+      if (!isValidDate(w.startDate) || !isValidDate(w.endDate)) {
+        we[idx] = "Both dates required (valid date)";
+        return;
+      }
+      if (w.startDate > w.endDate) {
+        we[idx] = "Workload start must be before end";
+        return;
+      }
+      if (isValidDate(task?.startDate) && isValidDate(task?.endDate)) {
+        if (w.startDate < task.startDate || w.endDate > task.endDate) {
+          we[idx] = "Workload must be inside task range";
+        }
+      }
+    });
+
+    setErrors(e);
+    setWorkloadErrors(we);
+
+    return Object.keys(e).length === 0 && Object.keys(we).length === 0;
+  }, [task, workloads]);
+
+  const handleSave = useCallback(() => {
+    if (!validate()) {
+      if (!task?.taskName?.trim?.()) {
+        setInfo("⚠️ Task name is required");
+      }
+      return;
+    }
+
+    // strip UI-only fields
+    const cleanedWorkloads = workloads.map(({ startDate, endDate }) => ({ startDate, endDate }));
+
+    onSave({ ...task, workloads: cleanedWorkloads });
+  }, [task, workloads, validate, onSave]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -60,60 +115,6 @@ export default function TaskModal({ isOpen, mode, initialTask, onClose, onSave }
   }, [isOpen, initialTask]);
 
   if (!isOpen || !task) return null;
-
-  const setField = (field, value) => {
-    setInfo("");
-    setTask((prev) => ({ ...prev, [field]: value }));
-  };
-
-  const validate = () => {
-    const e = {};
-    const we = {};
-
-    if (!task.taskName.trim()) e.taskName = "Task name required";
-
-    if (!isValidDate(task.startDate)) e.startDate = "Valid start date required";
-    if (!isValidDate(task.endDate)) e.endDate = "Valid end date required";
-
-    if (isValidDate(task.startDate) && isValidDate(task.endDate) && task.startDate > task.endDate) {
-      e.range = "Task start must be before end";
-    }
-
-    workloads.forEach((w, idx) => {
-      if (!isValidDate(w.startDate) || !isValidDate(w.endDate)) {
-        we[idx] = "Both dates required (valid date)";
-        return;
-      }
-      if (w.startDate > w.endDate) {
-        we[idx] = "Workload start must be before end";
-        return;
-      }
-      if (isValidDate(task.startDate) && isValidDate(task.endDate)) {
-        if (w.startDate < task.startDate || w.endDate > task.endDate) {
-          we[idx] = "Workload must be inside task range";
-        }
-      }
-    });
-
-    setErrors(e);
-    setWorkloadErrors(we);
-
-    return Object.keys(e).length === 0 && Object.keys(we).length === 0;
-  };
-
-  const handleSave = () => {
-    if (!validate()) {
-      if (!task.taskName.trim()) {
-        setInfo("⚠️ Task name is required");
-      }
-      return;
-    }
-
-    // strip UI-only fields
-    const cleanedWorkloads = workloads.map(({ startDate, endDate }) => ({ startDate, endDate }));
-
-    onSave({ ...task, workloads: cleanedWorkloads });
-  };
 
   return (
     <div className="modalOverlay" onMouseDown={onClose}>
