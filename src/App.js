@@ -105,45 +105,41 @@ export default function App() {
   };
 
   return (
-    <div style={{ padding: 20 }}>
+    <div className="App">
       {/* ✅ Toast UI */}
       {toast ? (
-        <div
-          style={{
-            position: "fixed",
-            top: 18,
-            right: 18,
-            padding: "10px 12px",
-            border: "1px solid #ddd",
-            background: "white",
-            borderRadius: 10,
-            boxShadow: "0 6px 18px rgba(0,0,0,0.12)",
-            zIndex: 9999,
-          }}
-        >
+        <div className="toast">
           {toast}
         </div>
       ) : null}
 
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <h1 style={{ margin: 0 }}>SPIN Task Management</h1>
-        <button onClick={openCreate}>+ Create Task</button>
-      </div>
-
-      {/* ✅ Storage warning */}
-      {storageError ? (
-        <div style={{ marginTop: 10, padding: 10, border: "1px solid #ddd" }}>
-          {storageError}
+      <div className="app-container">
+        <div className="app-header">
+          <h1>SPIN Task Management</h1>
+          <button 
+            onClick={openCreate}
+            className="create-button"
+            title="Create a new task"
+          >
+            ✨ Create Task
+          </button>
         </div>
-      ) : null}
 
-      <div style={{ marginTop: 12 }}>
-        <Table
-          tasks={tasks}
-          onDoubleClickRow={openEdit}
-          onEdit={openEdit}
-          onDelete={handleDeleteTask}
-        />
+        {/* ✅ Storage warning */}
+        {storageError ? (
+          <div className="storage-warning">
+            {storageError}
+          </div>
+        ) : null}
+
+        <div style={{ marginTop: 12 }}>
+          <Table
+            tasks={tasks}
+            onDoubleClickRow={openEdit}
+            onEdit={openEdit}
+            onDelete={handleDeleteTask}
+          />
+        </div>
       </div>
 
       <TaskModal

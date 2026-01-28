@@ -108,21 +108,38 @@ export default function LoadEditor({ taskStart, taskEnd, workloads, setWorkloads
   }, [taskStart, taskEnd, canLimitRange, setWorkloads, onAdjusted]);
 
   return (
-    <div style={{ marginTop: 15 }}>
-      <h3>Workloads</h3>
+    <div style={{ marginTop: 24, paddingTop: 20, borderTop: "2px solid #e2e8f0" }}>
+      <h3 style={{ margin: "0 0 16px 0", fontSize: "16px", fontWeight: 700, color: "#1e293b" }}>Workloads</h3>
 
-      <button type="button" onClick={addWorkload} disabled={!canLimitRange}>
+      <button 
+        type="button" 
+        onClick={addWorkload} 
+        disabled={!canLimitRange}
+        style={{
+          padding: "8px 16px",
+          background: canLimitRange ? "#10b981" : "#cbd5e1",
+          color: "white",
+          border: "none",
+          borderRadius: "6px",
+          cursor: canLimitRange ? "pointer" : "not-allowed",
+          fontSize: "14px",
+          fontWeight: 600,
+          transition: "all 0.2s ease"
+        }}
+        onMouseEnter={(e) => canLimitRange && (e.target.style.background = "#059669")}
+        onMouseLeave={(e) => canLimitRange && (e.target.style.background = "#10b981")}
+      >
         + Add Workload
       </button>
 
       {!canLimitRange ? (
-        <p style={{ opacity: 0.8, marginTop: 8 }}>
+        <p style={{ opacity: 0.7, marginTop: 12, fontSize: "14px", color: "#64748b" }}>
           Please set a valid Task Start/End date first.
         </p>
       ) : null}
 
       {workloads.length === 0 ? (
-        <p style={{ opacity: 0.8 }}>No workloads yet.</p>
+        <p style={{ opacity: 0.7, marginTop: 12, fontSize: "14px", color: "#64748b" }}>No workloads yet.</p>
       ) : (
         workloads.map((w, index) => {
           const endMin =
@@ -131,44 +148,92 @@ export default function LoadEditor({ taskStart, taskEnd, workloads, setWorkloads
           const duration = calcDurationDays(w.startDate, w.endDate);
 
           return (
-            <div key={w._cid || `${index}`} style={{ marginTop: 10, border: "1px solid #ccc", padding: 10 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                <div><b>Workload #{index + 1}</b></div>
-                <div style={{ opacity: 0.8 }}>
+            <div 
+              key={w._cid || `${index}`} 
+              style={{ 
+                marginTop: 12, 
+                border: "1.5px solid #e2e8f0", 
+                borderRadius: "8px",
+                padding: 16,
+                background: "#f8fafc"
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                <div style={{ fontWeight: 600, color: "#1e293b" }}>Workload #{index + 1}</div>
+                <div style={{ fontSize: "13px", color: "#64748b", fontWeight: 500 }}>
                   Duration: {duration === null ? "—" : `${duration} day(s)`}
                 </div>
               </div>
 
-              <div style={{ marginTop: 8 }}>
-                <label style={{ marginRight: 8 }}>
-                  Start:{" "}
+              <div style={{ display: "flex", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
+                <label style={{ flex: 1, minWidth: "200px", fontSize: "14px", fontWeight: 500, color: "#334155" }}>
+                  Start:
                   <input
                     type="date"
                     value={w.startDate}
                     min={canLimitRange ? taskStart : undefined}
                     max={canLimitRange ? taskEnd : undefined}
                     onChange={(e) => updateWorkload(index, "startDate", e.target.value)}
+                    style={{
+                      display: "block",
+                      marginTop: 6,
+                      padding: "8px 10px",
+                      border: "1.5px solid #e2e8f0",
+                      borderRadius: "6px",
+                      fontSize: "13px",
+                      width: "100%",
+                      background: "white"
+                    }}
                   />
                 </label>
 
-                <label style={{ marginRight: 8 }}>
-                  End:{" "}
+                <label style={{ flex: 1, minWidth: "200px", fontSize: "14px", fontWeight: 500, color: "#334155" }}>
+                  End:
                   <input
                     type="date"
                     value={w.endDate}
                     min={canLimitRange ? endMin : undefined}
                     max={canLimitRange ? taskEnd : undefined}
                     onChange={(e) => updateWorkload(index, "endDate", e.target.value)}
+                    style={{
+                      display: "block",
+                      marginTop: 6,
+                      padding: "8px 10px",
+                      border: "1.5px solid #e2e8f0",
+                      borderRadius: "6px",
+                      fontSize: "13px",
+                      width: "100%",
+                      background: "white"
+                    }}
                   />
                 </label>
 
-                <button type="button" onClick={() => removeWorkload(index)}>
+                <button 
+                  type="button" 
+                  onClick={() => removeWorkload(index)}
+                  style={{
+                    padding: "8px 14px",
+                    background: "#ef4444",
+                    color: "white",
+                    border: "none",
+                    borderRadius: "6px",
+                    cursor: "pointer",
+                    fontSize: "13px",
+                    fontWeight: 600,
+                    marginTop: 28,
+                    transition: "all 0.2s ease"
+                  }}
+                  onMouseEnter={(e) => e.target.style.background = "#dc2626"}
+                  onMouseLeave={(e) => e.target.style.background = "#ef4444"}
+                >
                   Remove
                 </button>
               </div>
 
               {errors?.[index] ? (
-                <div style={{ color: "red", marginTop: 6 }}>{errors[index]}</div>
+                <div style={{ color: "#dc2626", marginTop: 10, fontSize: "13px", fontWeight: 500 }}>
+                  ⚠️ {errors[index]}
+                </div>
               ) : null}
             </div>
           );

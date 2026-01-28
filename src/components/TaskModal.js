@@ -102,7 +102,12 @@ export default function TaskModal({ isOpen, mode, initialTask, onClose, onSave }
   };
 
   const handleSave = () => {
-    if (!validate()) return;
+    if (!validate()) {
+      if (!task.taskName.trim()) {
+        setInfo("⚠️ Task name is required");
+      }
+      return;
+    }
 
     // strip UI-only fields
     const cleanedWorkloads = workloads.map(({ startDate, endDate }) => ({ startDate, endDate }));
@@ -116,14 +121,27 @@ export default function TaskModal({ isOpen, mode, initialTask, onClose, onSave }
         <h2>{isEdit ? "Edit Task" : "Create Task"}</h2>
 
         {info ? (
-          <div style={{ padding: 10, border: "1px solid #ddd", marginBottom: 10, opacity: 0.9 }}>
+          <div style={{ 
+            background: "#eff6ff", 
+            border: "1px solid #93c5fd", 
+            color: "#1e40af",
+            padding: "12px 16px", 
+            borderRadius: "8px", 
+            marginBottom: 16, 
+            fontSize: "14px",
+            fontWeight: 500
+          }}>
             {info}
           </div>
         ) : null}
 
         <div className="field">
           <label>Task Name *</label>
-          <input value={task.taskName} onChange={(e) => setField("taskName", e.target.value)} />
+          <input 
+            placeholder="Enter task name (required)" 
+            value={task.taskName} 
+            onChange={(e) => setField("taskName", e.target.value)} 
+          />
           {errors.taskName && <div className="error">{errors.taskName}</div>}
         </div>
 
@@ -179,11 +197,62 @@ export default function TaskModal({ isOpen, mode, initialTask, onClose, onSave }
           onAdjusted={() => setInfo("Some workloads were adjusted to fit the updated task date range.")}
         />
 
-        <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
-          <button type="button" onClick={handleSave}>
+        <div style={{ display: "flex", gap: 12, marginTop: 24 }}>
+          <button 
+            type="button" 
+            onClick={handleSave}
+            style={{
+              flex: 1,
+              padding: "12px 24px",
+              background: "linear-gradient(135deg, #1e40af 0%, #1e3a8a 100%)",
+              color: "white",
+              border: "none",
+              borderRadius: "8px",
+              cursor: "pointer",
+              fontWeight: 600,
+              fontSize: "15px",
+              boxShadow: "0 4px 15px rgba(30, 64, 175, 0.3)",
+              transition: "all 0.3s ease"
+            }}
+            onMouseEnter={(e) => {
+              e.target.style.background = "linear-gradient(135deg, #1e3a8a 0%, #172554 100%)";
+              e.target.style.transform = "translateY(-2px)";
+              e.target.style.boxShadow = "0 6px 20px rgba(30, 64, 175, 0.4)";
+            }}
+            onMouseLeave={(e) => {
+              e.target.style.background = "linear-gradient(135deg, #1e40af 0%, #1e3a8a 100%)";
+              e.target.style.transform = "translateY(0)";
+              e.target.style.boxShadow = "0 4px 15px rgba(30, 64, 175, 0.3)";
+            }}
+          >
             {isEdit ? "Save Changes" : "Create"}
           </button>
-          <button type="button" onClick={onClose}>Close</button>
+          <button 
+            type="button" 
+            onClick={onClose}
+            style={{
+              flex: 1,
+              padding: "12px 24px",
+              background: "#e2e8f0",
+              color: "#1e293b",
+              border: "none",
+              borderRadius: "8px",
+              cursor: "pointer",
+              fontWeight: 600,
+              fontSize: "15px",
+              transition: "all 0.3s ease"
+            }}
+            onMouseEnter={(e) => {
+              e.target.style.background = "#cbd5e1";
+              e.target.style.transform = "translateY(-2px)";
+            }}
+            onMouseLeave={(e) => {
+              e.target.style.background = "#e2e8f0";
+              e.target.style.transform = "translateY(0)";
+            }}
+          >
+            Close
+          </button>
         </div>
       </div>
     </div>
