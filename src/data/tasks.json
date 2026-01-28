@@ -1,0 +1,18 @@
+[
+  {
+    "id": 1,
+    "taskName": "Design Control Panel",
+    "description": "Design UI for the new control system",
+    "startDate": "2026-01-01",
+    "endDate": "2026-02-01",
+    "requestedBy": "Manager A",
+    "assignedTo": "Resource A",
+    "status": "In Progress",
+    "project": "Project Alpha",
+    "workloads": [
+      { "startDate": "2026-01-03", "endDate": "2026-01-05" },
+      { "startDate": "2026-01-10", "endDate": "2026-01-12" },
+      { "startDate": "2026-01-20", "endDate": "2026-01-22" }
+    ]
+  }
+]
