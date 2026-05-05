@@ -1,0 +1,32 @@
+{
+  "name": "contry-seed",
+  "version": "1.0.0",
+  "description": "Seed script for Firestore using firebase-admin",
+  "main": "scripts/seedTickets.ts",
+  "scripts": {
+    "create-admin": "tsx scripts/createAdminUser.ts",
+    "backfill:assignee-name": "node scripts/backfillAssignedToName.mjs",
+    "seed:reporters": "tsx scripts/seedReporterUsers.ts",
+    "seed": "tsx scripts/seedTickets.ts",
+    "reset:seed:v2": "tsx scripts/resetAndSeedV2.ts",
+    "clear:tickets": "tsx scripts/clearTickets.ts",
+    "firebase:rules:build": "tsx firebase/scripts/sync-firebase-rules.ts",
+    "firebase:rules:deploy": "npm run firebase:rules:build && npx firebase-tools deploy --config firebase/firebase.json --only firestore:rules,storage",
+    "firebase:hosting:deploy": "npx firebase-tools deploy --config firebase/firebase.json --only hosting"
+  },
+  "keywords": [
+    "firebase",
+    "firestore",
+    "seed"
+  ],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.0.0",
+    "recharts": "^3.8.0"
+  }
+}

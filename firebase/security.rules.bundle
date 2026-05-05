@@ -1,0 +1,104 @@
+# Single source of truth for Firebase security rules.
+# Edit this file only, then run: npm run firebase:rules:build
+
+# >>> FIRESTORE
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userDoc(uid) {
+      return get(/databases/$(database)/documents/users/$(uid));
+    }
+
+    function role() {
+      return signedIn() ? userDoc(request.auth.uid).data.role : null;
+    }
+
+    function isAdmin() {
+      return signedIn() && role() == "admin";
+    }
+
+    function isOwner(resourceData) {
+      return signedIn() && resourceData.created_by_uid == request.auth.uid;
+    }
+
+    function getTicketData(ticketId) {
+      return get(/databases/$(database)/documents/tickets/$(ticketId)).data;
+    }
+
+    match /users/{uid} {
+      allow read: if signedIn() && (uid == request.auth.uid || isAdmin());
+      allow write: if false;
+    }
+
+    match /sequences/{docId} {
+      allow read, write: if signedIn();
+    }
+
+    match /tickets/{ticketId} {
+      allow create: if signedIn() && request.resource.data.created_by_uid == request.auth.uid;
+      allow get, list: if isAdmin() || (signedIn() && isOwner(resource.data));
+
+      allow update: if (
+        isAdmin() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'updated_at',
+          'updated_by_uid',
+          'last_update_hint',
+          'status',
+          'assigned_to_uid',
+          'assigned_to_name',
+          'category',
+          'severity',
+          'closure_summary',
+          'lessons_learned',
+          'closed_at',
+          'closed_by_uid',
+          'duplicate_of_ticket_id',
+          'related_ticket_ids'
+        ])
+      ) || (
+        signedIn() && isOwner(resource.data) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['updated_at', 'updated_by_uid', 'last_update_hint'])
+      );
+
+      allow delete: if isAdmin();
+
+      match /{subCollection}/{docId} {
+        allow get, list: if isAdmin() || (signedIn() && isOwner(getTicketData(ticketId)));
+        allow create: if isAdmin() || (signedIn() && isOwner(getTicketData(ticketId)));
+        allow update: if isAdmin();
+        allow delete: if isAdmin() || (
+          subCollection == "comments" &&
+          signedIn() &&
+          resource.data.created_by_uid == request.auth.uid
+        );
+      }
+    }
+
+    match /audit_logs/{logId} {
+      allow get, list: if isAdmin();
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
+# <<< FIRESTORE
+
+# >>> STORAGE
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if true;
+    }
+  }
+}
+# <<< STORAGE

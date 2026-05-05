@@ -1,0 +1,253 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userDoc(uid) {
+      return get(/databases/$(database)/documents/users/$(uid));
+    }
+
+    function role() {
+      return signedIn() ? userDoc(request.auth.uid).data.role : null;
+    }
+
+    function isAdmin() {
+      return signedIn() && role() == "admin";
+    }
+
+    function ownerUid(resourceData) {
+      return resourceData.created_by_uid != null
+        ? resourceData.created_by_uid
+        : (
+          resourceData.created_by != null
+            ? resourceData.created_by
+            : (
+              resourceData.createdByUid != null
+                ? resourceData.createdByUid
+                : null
+            )
+        );
+    }
+
+    function isOwner(resourceData) {
+      return signedIn() && ownerUid(resourceData) == request.auth.uid;
+    }
+
+    function getTicketData(ticketId) {
+      return get(/databases/$(database)/documents/tickets/$(ticketId)).data;
+    }
+
+    function isMissingFieldValue(value) {
+      return value == null ||
+        (value is string && value.size() == 0) ||
+        (value is list && value.size() == 0);
+    }
+
+    function isNonEmptyFieldValue(value) {
+      return value != null &&
+        (!(value is string) || value.size() > 0) &&
+        (!(value is list) || value.size() > 0);
+    }
+
+    function reporterMissingFieldsUpdateAllowed() {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+
+      return changed.hasOnly([
+        'updated_at',
+        'updated_by_uid',
+        'last_update_hint',
+        'description',
+        'noticed_time',
+        'category',
+        'category_other_text',
+        'severity',
+        'location_type',
+        'location_detail',
+        'response_taken',
+        'response_details',
+        'affected_asset',
+        'error_symptom',
+        'incident_active',
+        'data_involved_flag',
+        'data_other_text',
+        'work_continuity',
+        'impact_scope',
+        'external_party_involved',
+        'external_party_details',
+        'already_reported_to_it',
+        'reported_to_details',
+        'preferred_contact_method',
+        'phone_number',
+        'contact_email'
+      ]) &&
+      request.resource.data.updated_by_uid == request.auth.uid &&
+      (!changed.hasAny(['description']) || (isMissingFieldValue(resource.data.description) && isNonEmptyFieldValue(request.resource.data.description))) &&
+      (!changed.hasAny(['noticed_time']) || (isMissingFieldValue(resource.data.noticed_time) && isNonEmptyFieldValue(request.resource.data.noticed_time))) &&
+      (!changed.hasAny(['category']) || (isMissingFieldValue(resource.data.category) && isNonEmptyFieldValue(request.resource.data.category))) &&
+      (!changed.hasAny(['category_other_text']) || (
+        isMissingFieldValue(resource.data.category_other_text) &&
+        isNonEmptyFieldValue(request.resource.data.category_other_text) &&
+        request.resource.data.category == 'other'
+      )) &&
+      (!changed.hasAny(['severity']) || (isMissingFieldValue(resource.data.severity) && isNonEmptyFieldValue(request.resource.data.severity))) &&
+      (!changed.hasAny(['location_type']) || (isMissingFieldValue(resource.data.location_type) && isNonEmptyFieldValue(request.resource.data.location_type))) &&
+      (!changed.hasAny(['location_detail']) || (isMissingFieldValue(resource.data.location_detail) && isNonEmptyFieldValue(request.resource.data.location_detail))) &&
+      (!changed.hasAny(['response_taken']) || (isMissingFieldValue(resource.data.response_taken) && request.resource.data.response_taken is bool)) &&
+      (!changed.hasAny(['response_details']) || (
+        isMissingFieldValue(resource.data.response_details) &&
+        isNonEmptyFieldValue(request.resource.data.response_details) &&
+        request.resource.data.response_taken == true
+      )) &&
+      (!changed.hasAny(['affected_asset']) || (isMissingFieldValue(resource.data.affected_asset) && isNonEmptyFieldValue(request.resource.data.affected_asset))) &&
+      (!changed.hasAny(['error_symptom']) || (isMissingFieldValue(resource.data.error_symptom) && isNonEmptyFieldValue(request.resource.data.error_symptom))) &&
+      (!changed.hasAny(['incident_active']) || (isMissingFieldValue(resource.data.incident_active) && request.resource.data.incident_active is bool)) &&
+      (!changed.hasAny(['data_involved_flag']) || (isMissingFieldValue(resource.data.data_involved_flag) && request.resource.data.data_involved_flag is bool)) &&
+      (!changed.hasAny(['data_other_text']) || (
+        isMissingFieldValue(resource.data.data_other_text) &&
+        isNonEmptyFieldValue(request.resource.data.data_other_text) &&
+        request.resource.data.data_involved_flag == true
+      )) &&
+      (!changed.hasAny(['work_continuity']) || (isMissingFieldValue(resource.data.work_continuity) && isNonEmptyFieldValue(request.resource.data.work_continuity))) &&
+      (!changed.hasAny(['impact_scope']) || (isMissingFieldValue(resource.data.impact_scope) && isNonEmptyFieldValue(request.resource.data.impact_scope))) &&
+      (!changed.hasAny(['external_party_involved']) || (isMissingFieldValue(resource.data.external_party_involved) && request.resource.data.external_party_involved is bool)) &&
+      (!changed.hasAny(['external_party_details']) || (
+        isMissingFieldValue(resource.data.external_party_details) &&
+        isNonEmptyFieldValue(request.resource.data.external_party_details) &&
+        request.resource.data.external_party_involved == true
+      )) &&
+      (!changed.hasAny(['already_reported_to_it']) || (isMissingFieldValue(resource.data.already_reported_to_it) && request.resource.data.already_reported_to_it is bool)) &&
+      (!changed.hasAny(['reported_to_details']) || (
+        isMissingFieldValue(resource.data.reported_to_details) &&
+        isNonEmptyFieldValue(request.resource.data.reported_to_details) &&
+        request.resource.data.already_reported_to_it == true
+      )) &&
+      (!changed.hasAny(['preferred_contact_method']) || (isMissingFieldValue(resource.data.preferred_contact_method) && isNonEmptyFieldValue(request.resource.data.preferred_contact_method))) &&
+      (!changed.hasAny(['phone_number']) || (
+        isMissingFieldValue(resource.data.phone_number) &&
+        isNonEmptyFieldValue(request.resource.data.phone_number) &&
+        request.resource.data.preferred_contact_method == 'phone'
+      )) &&
+      (!changed.hasAny(['contact_email']) || (isMissingFieldValue(resource.data.contact_email) && isNonEmptyFieldValue(request.resource.data.contact_email)));
+    }
+
+    // Compatibility path: keep owner-only and strict writable key allowlist,
+    // but skip per-field "must be missing" predicates when legacy data shape
+    // or conditional combinations cause false permission-denied.
+    // Frontend service layer still enforces missing-only updates.
+    function reporterMissingFieldsUpdateAllowedCompat() {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+
+      return changed.hasOnly([
+        'updated_at',
+        'updated_by_uid',
+        'last_update_hint',
+        'description',
+        'noticed_time',
+        'category',
+        'category_other_text',
+        'severity',
+        'location_type',
+        'location_detail',
+        'response_taken',
+        'response_details',
+        'affected_asset',
+        'error_symptom',
+        'incident_active',
+        'data_involved_flag',
+        'data_other_text',
+        'work_continuity',
+        'impact_scope',
+        'external_party_involved',
+        'external_party_details',
+        'already_reported_to_it',
+        'reported_to_details',
+        'preferred_contact_method',
+        'phone_number',
+        'contact_email'
+      ]) &&
+      request.resource.data.updated_by_uid == request.auth.uid;
+    }
+
+    // Users collection
+    match /users/{uid} {
+      allow read: if signedIn() && (uid == request.auth.uid || isAdmin());
+      allow write: if false;
+
+      match /notifications/{notificationId} {
+        allow read: if signedIn() && uid == request.auth.uid;
+        allow create, delete: if false;
+        allow update: if signedIn() &&
+          uid == request.auth.uid &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read_at']);
+      }
+    }
+
+    // Sequences collection - for ticket ID generation (read/write by all authenticated users)
+    match /sequences/{docId} {
+      allow read, write: if signedIn();
+    }
+
+    // Tickets
+    match /tickets/{ticketId} {
+      // Create: any authenticated user may create, must set created_by_uid
+      allow create: if signedIn() && request.resource.data.created_by_uid == request.auth.uid;
+
+      // Read: admin can read all; reporter can read their own
+      allow get, list: if isAdmin() || (signedIn() && isOwner(resource.data));
+
+      // Update: admin can only modify operational fields; reporter can only update activity timestamps on their own ticket
+      allow update: if (
+        isAdmin() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'updated_at',
+          'updated_by_uid',
+          'last_update_hint',
+          'issue_type',
+          'status',
+          'assigned_to_uid',
+          'assigned_to_name',
+          'category',
+          'severity',
+          'closure_summary',
+          'lessons_learned',
+          'closed_at',
+          'closed_by_uid',
+          'duplicate_of_ticket_id',
+          'related_ticket_ids'
+        ])
+      ) || (
+        signedIn() && isOwner(resource.data) &&
+        (reporterMissingFieldsUpdateAllowed() || reporterMissingFieldsUpdateAllowedCompat())
+      );
+
+      // Delete: admin only
+      allow delete: if isAdmin();
+
+      // Subcollections (comments, attachments, etc.)
+      match /{subCollection}/{docId} {
+        allow get, list: if isAdmin() || (signedIn() && isOwner(getTicketData(ticketId)));
+        allow create: if isAdmin() || (signedIn() && isOwner(getTicketData(ticketId)));
+        allow update: if isAdmin();
+        allow delete: if isAdmin() || (
+          subCollection == "comments" &&
+          signedIn() &&
+          resource.data.created_by_uid == request.auth.uid
+        );
+      }
+    }
+
+    // Audit logs: admin read-only, authenticated actor can append own logs
+    match /audit_logs/{logId} {
+      allow get, list: if isAdmin();
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // Default: deny all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
