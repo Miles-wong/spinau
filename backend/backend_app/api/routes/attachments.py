@@ -30,12 +30,10 @@ logger = get_logger(__name__)
 bp = Blueprint("attachments", __name__)
 
 
-def _resolve_ticket_owner_uid(ticket_data: dict) -> str:
-    """Resolve ticket owner UID from current and legacy schema fields."""
+def _resolve_ticket_owner_email(ticket_data: dict) -> str:
+    """Resolve ticket owner email from current and legacy schema fields."""
     return str(
-        ticket_data.get("created_by_uid")
-        or ticket_data.get("created_by")
-        or ticket_data.get("createdByUid")
+        ticket_data.get("created_by_email")
         or ""
     )
 
@@ -76,7 +74,7 @@ def _resolve_bucket_name(attachment_doc: dict) -> str:
 @require_auth
 def download_ticket_attachment(ticket_id: str, attachment_id: str):
     """Stream a ticket attachment to the browser with role-based access control."""
-    uid = g.uid
+    email = g.email
     db = get_firestore_db()
     started_at = time.perf_counter()
 
@@ -98,8 +96,8 @@ def download_ticket_attachment(ticket_id: str, attachment_id: str):
         mark_timing("ticket lookup done")
 
         ticket_data = ticket_doc.to_dict() or {}
-        created_by_uid = _resolve_ticket_owner_uid(ticket_data)
-        if not can_view_ticket(uid, created_by_uid):
+        created_by_email = _resolve_ticket_owner_email(ticket_data)
+        if not can_view_ticket(email, created_by_email):
             return jsonify({"error": "Permission denied"}), 403
 
         attachment_ref = ticket_ref.collection("attachments").document(attachment_id)
@@ -140,7 +138,7 @@ def download_ticket_attachment(ticket_id: str, attachment_id: str):
 
         try:
             log_action(
-                uid=uid,
+                actor_email=email,
                 action="download_attachment",
                 resource_type="ticket",
                 resource_id=ticket_id,

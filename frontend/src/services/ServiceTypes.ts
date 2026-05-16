@@ -17,9 +17,9 @@ export type TicketDoc = {
   reported_time?: FirestoreValue;
   created_at?: FirestoreValue;
   updated_at?: FirestoreValue;
-  created_by_uid?: string;
-  updated_by_uid?: string;
-  assigned_to_uid?: string | null;
+  created_by_email?: string;
+  updated_by_email?: string;
+  assigned_to_email?: string | null;
   assigned_to_name?: string | null;
 
   classification?: string;
@@ -56,11 +56,12 @@ export type TicketDoc = {
 
   already_reported_to_it?: boolean;
   reported_to_details?: string;
+  source?: string;
 
   closure_summary?: string;
   lessons_learned?: string;
   closed_at?: FirestoreValue | null;
-  closed_by_uid?: string | null;
+  closed_by_email?: string | null;
 
   duplicate_of_ticket_id?: string;
   related_ticket_ids?: string[];
@@ -72,7 +73,6 @@ export type TicketComment = {
   id: string;
   message: string;
   created_at?: FirestoreValue;
-  created_by_uid?: string;
   created_by_email?: string;
 };
 
@@ -83,14 +83,13 @@ export type TicketAttachment = {
   download_url: string;
   content_type?: string;
   size?: number;
-  uploaded_by_uid?: string;
   uploaded_by_email?: string;
   uploaded_at?: FirestoreValue;
 };
 
 export type AuditLog = {
   id: string;
-  uid?: string;
+  actor_email?: string;
   action?: string;
   resource_type?: string;
   resource_id?: string;
@@ -127,8 +126,9 @@ export type CreateTicketInput = {
   phone_number?: string;
   contact_email?: string;
   needs_triage_review?: boolean;
+  source?: string;
 
-  created_by_uid: string;
+  created_by_email: string;
   attachments?: File[];
 };
 
@@ -144,9 +144,9 @@ export type TicketRow = {
   location_type: string;
   location_detail: string;
   last_update_hint: string;
-  created_by_uid: string;
-  updated_by_uid: string;
-  assigned_to_uid: string;
+  created_by_email: string;
+  updated_by_email: string;
+  assigned_to_email: string;
   created_at: string;
   updated_at: string;
   updated_at_ms: number;

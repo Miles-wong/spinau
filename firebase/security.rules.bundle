@@ -9,29 +9,190 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function userDoc(uid) {
-      return get(/databases/$(database)/documents/users/$(uid));
+    function userDoc(email) {
+      return get(/databases/$(database)/documents/users/$(email));
+    }
+
+    function userDocExists(email) {
+      return exists(/databases/$(database)/documents/users/$(email));
+    }
+
+    function authEmail() {
+      return request.auth.token.email != null ? request.auth.token.email : "";
+    }
+
+    function isSelfUserDoc(userData) {
+      return signedIn() && (
+        userData.email == authEmail()
+      );
     }
 
     function role() {
-      return signedIn() ? userDoc(request.auth.uid).data.role : null;
+      return signedIn() && authEmail() != "" && userDocExists(authEmail())
+        ? userDoc(authEmail()).data.role
+        : null;
     }
 
     function isAdmin() {
       return signedIn() && role() == "admin";
     }
 
+    function ownerEmail(resourceData) {
+      return resourceData.created_by_email != null
+        ? resourceData.created_by_email
+        : null;
+    }
+
     function isOwner(resourceData) {
-      return signedIn() && resourceData.created_by_uid == request.auth.uid;
+      return signedIn() && ownerEmail(resourceData) == authEmail();
     }
 
     function getTicketData(ticketId) {
       return get(/databases/$(database)/documents/tickets/$(ticketId)).data;
     }
 
-    match /users/{uid} {
-      allow read: if signedIn() && (uid == request.auth.uid || isAdmin());
+    function isMissingFieldValue(value) {
+      return value == null ||
+        (value is string && value.size() == 0) ||
+        (value is list && value.size() == 0);
+    }
+
+    function isNonEmptyFieldValue(value) {
+      return value != null &&
+        (!(value is string) || value.size() > 0) &&
+        (!(value is list) || value.size() > 0);
+    }
+
+    function reporterMissingFieldsUpdateAllowed() {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+
+      return changed.hasOnly([
+        'updated_at',
+        'updated_by_email',
+        'last_update_hint',
+        'description',
+        'noticed_time',
+        'category',
+        'category_other_text',
+        'severity',
+        'location_type',
+        'location_detail',
+        'response_taken',
+        'response_details',
+        'affected_asset',
+        'error_symptom',
+        'incident_active',
+        'data_involved_flag',
+        'data_other_text',
+        'work_continuity',
+        'impact_scope',
+        'external_party_involved',
+        'external_party_details',
+        'already_reported_to_it',
+        'reported_to_details',
+        'preferred_contact_method',
+        'phone_number',
+        'contact_email'
+      ]) &&
+      request.resource.data.updated_by_email == authEmail() &&
+      (!changed.hasAny(['description']) || (isMissingFieldValue(resource.data.description) && isNonEmptyFieldValue(request.resource.data.description))) &&
+      (!changed.hasAny(['noticed_time']) || (isMissingFieldValue(resource.data.noticed_time) && isNonEmptyFieldValue(request.resource.data.noticed_time))) &&
+      (!changed.hasAny(['category']) || (isMissingFieldValue(resource.data.category) && isNonEmptyFieldValue(request.resource.data.category))) &&
+      (!changed.hasAny(['category_other_text']) || (
+        isMissingFieldValue(resource.data.category_other_text) &&
+        isNonEmptyFieldValue(request.resource.data.category_other_text) &&
+        request.resource.data.category == 'other'
+      )) &&
+      (!changed.hasAny(['severity']) || (isMissingFieldValue(resource.data.severity) && isNonEmptyFieldValue(request.resource.data.severity))) &&
+      (!changed.hasAny(['location_type']) || (isMissingFieldValue(resource.data.location_type) && isNonEmptyFieldValue(request.resource.data.location_type))) &&
+      (!changed.hasAny(['location_detail']) || (isMissingFieldValue(resource.data.location_detail) && isNonEmptyFieldValue(request.resource.data.location_detail))) &&
+      (!changed.hasAny(['response_taken']) || (isMissingFieldValue(resource.data.response_taken) && request.resource.data.response_taken is bool)) &&
+      (!changed.hasAny(['response_details']) || (
+        isMissingFieldValue(resource.data.response_details) &&
+        isNonEmptyFieldValue(request.resource.data.response_details) &&
+        request.resource.data.response_taken == true
+      )) &&
+      (!changed.hasAny(['affected_asset']) || (isMissingFieldValue(resource.data.affected_asset) && isNonEmptyFieldValue(request.resource.data.affected_asset))) &&
+      (!changed.hasAny(['error_symptom']) || (isMissingFieldValue(resource.data.error_symptom) && isNonEmptyFieldValue(request.resource.data.error_symptom))) &&
+      (!changed.hasAny(['incident_active']) || (isMissingFieldValue(resource.data.incident_active) && request.resource.data.incident_active is bool)) &&
+      (!changed.hasAny(['data_involved_flag']) || (isMissingFieldValue(resource.data.data_involved_flag) && request.resource.data.data_involved_flag is bool)) &&
+      (!changed.hasAny(['data_other_text']) || (
+        isMissingFieldValue(resource.data.data_other_text) &&
+        isNonEmptyFieldValue(request.resource.data.data_other_text) &&
+        request.resource.data.data_involved_flag == true
+      )) &&
+      (!changed.hasAny(['work_continuity']) || (isMissingFieldValue(resource.data.work_continuity) && isNonEmptyFieldValue(request.resource.data.work_continuity))) &&
+      (!changed.hasAny(['impact_scope']) || (isMissingFieldValue(resource.data.impact_scope) && isNonEmptyFieldValue(request.resource.data.impact_scope))) &&
+      (!changed.hasAny(['external_party_involved']) || (isMissingFieldValue(resource.data.external_party_involved) && request.resource.data.external_party_involved is bool)) &&
+      (!changed.hasAny(['external_party_details']) || (
+        isMissingFieldValue(resource.data.external_party_details) &&
+        isNonEmptyFieldValue(request.resource.data.external_party_details) &&
+        request.resource.data.external_party_involved == true
+      )) &&
+      (!changed.hasAny(['already_reported_to_it']) || (isMissingFieldValue(resource.data.already_reported_to_it) && request.resource.data.already_reported_to_it is bool)) &&
+      (!changed.hasAny(['reported_to_details']) || (
+        isMissingFieldValue(resource.data.reported_to_details) &&
+        isNonEmptyFieldValue(request.resource.data.reported_to_details) &&
+        request.resource.data.already_reported_to_it == true
+      )) &&
+      (!changed.hasAny(['preferred_contact_method']) || (isMissingFieldValue(resource.data.preferred_contact_method) && isNonEmptyFieldValue(request.resource.data.preferred_contact_method))) &&
+      (!changed.hasAny(['phone_number']) || (
+        isMissingFieldValue(resource.data.phone_number) &&
+        isNonEmptyFieldValue(request.resource.data.phone_number) &&
+        request.resource.data.preferred_contact_method == 'phone'
+      )) &&
+      (!changed.hasAny(['contact_email']) || (isMissingFieldValue(resource.data.contact_email) && isNonEmptyFieldValue(request.resource.data.contact_email)));
+    }
+
+    // Compatibility path: keep owner-only and strict writable key allowlist,
+    // but skip per-field "must be missing" predicates when legacy data shape
+    // or conditional combinations cause false permission-denied.
+    // Frontend service layer still enforces missing-only updates.
+    function reporterMissingFieldsUpdateAllowedCompat() {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+
+      return changed.hasOnly([
+        'updated_at',
+        'updated_by_email',
+        'last_update_hint',
+        'description',
+        'noticed_time',
+        'category',
+        'category_other_text',
+        'severity',
+        'location_type',
+        'location_detail',
+        'response_taken',
+        'response_details',
+        'affected_asset',
+        'error_symptom',
+        'incident_active',
+        'data_involved_flag',
+        'data_other_text',
+        'work_continuity',
+        'impact_scope',
+        'external_party_involved',
+        'external_party_details',
+        'already_reported_to_it',
+        'reported_to_details',
+        'preferred_contact_method',
+        'phone_number',
+        'contact_email'
+      ]) &&
+      request.resource.data.updated_by_email == authEmail();
+    }
+
+    match /users/{email} {
+      allow read: if signedIn() && (email == authEmail() || isSelfUserDoc(resource.data) || isAdmin());
       allow write: if false;
+
+      match /notifications/{notificationId} {
+        allow read: if signedIn() && email == authEmail();
+        allow create, delete: if false;
+        allow update: if signedIn() &&
+          email == authEmail() &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read_at']);
+      }
     }
 
     match /sequences/{docId} {
@@ -39,30 +200,31 @@ service cloud.firestore {
     }
 
     match /tickets/{ticketId} {
-      allow create: if signedIn() && request.resource.data.created_by_uid == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.created_by_email == authEmail();
       allow get, list: if isAdmin() || (signedIn() && isOwner(resource.data));
 
       allow update: if (
         isAdmin() &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           'updated_at',
-          'updated_by_uid',
+          'updated_by_email',
           'last_update_hint',
+          'issue_type',
           'status',
-          'assigned_to_uid',
+          'assigned_to_email',
           'assigned_to_name',
           'category',
           'severity',
           'closure_summary',
           'lessons_learned',
           'closed_at',
-          'closed_by_uid',
+          'closed_by_email',
           'duplicate_of_ticket_id',
           'related_ticket_ids'
         ])
       ) || (
         signedIn() && isOwner(resource.data) &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['updated_at', 'updated_by_uid', 'last_update_hint'])
+        (reporterMissingFieldsUpdateAllowed() || reporterMissingFieldsUpdateAllowedCompat())
       );
 
       allow delete: if isAdmin();
@@ -74,14 +236,14 @@ service cloud.firestore {
         allow delete: if isAdmin() || (
           subCollection == "comments" &&
           signedIn() &&
-          resource.data.created_by_uid == request.auth.uid
+          resource.data.created_by_email == authEmail()
         );
       }
     }
 
     match /audit_logs/{logId} {
       allow get, list: if isAdmin();
-      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.actor_email == authEmail();
       allow update, delete: if false;
     }
 

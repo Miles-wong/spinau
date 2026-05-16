@@ -25,7 +25,7 @@ def list_notifications_endpoint():
         except ValueError:
             limit = 20
 
-        notifications = list_user_notifications(g.uid, limit=limit)
+        notifications = list_user_notifications(g.email, limit=limit)
         return jsonify({"notifications": notifications}), 200
     except Exception as exc:
         logger.error("list_notifications_endpoint error", exc_info=exc)
@@ -43,7 +43,7 @@ def mark_notifications_read_endpoint():
             return jsonify({"error": "notification_ids must be a list"}), 400
 
         updated = mark_user_notifications_read(
-            g.uid,
+            g.email,
             notification_ids=[str(item) for item in notification_ids] if notification_ids else None,
         )
         return jsonify({"updated": updated}), 200
@@ -66,7 +66,7 @@ def create_ticket_event_notification_endpoint():
             return jsonify({"error": "event_type and ticket_id are required"}), 400
 
         notification_ids = create_ticket_event_notifications(
-            actor_uid=g.uid,
+            actor_email=g.email,
             event_type=event_type,
             ticket_doc_id=ticket_id,
             metadata=metadata,

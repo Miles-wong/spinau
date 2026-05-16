@@ -1,8 +1,7 @@
 """Conversational form API routes.
 
-All live conversation state is kept in the module-level ``CONVERSATION_STATES``
-dict. For production deployments with multiple workers, replace this with a
-Redis or database-backed store.
+Conversation state is persisted in Firestore by ``conversation_id`` so the
+session survives page refreshes and process restarts.
 
 Endpoints
 ---------
@@ -12,13 +11,14 @@ POST /api/conversation/<id>/skip
 POST /api/conversation/<id>/message
 POST /api/conversation/<id>/message/stream
 GET  /api/conversation/<id>/data
+DELETE /api/conversation/<id>
 """
 
 import json
 import time
 import uuid
 from collections import defaultdict, deque
-from threading import Lock
+from threading import Lock, Thread
 
 from flask import Blueprint, Response, g, jsonify, request, stream_with_context
 
@@ -26,37 +26,36 @@ from backend_app.ai import (
     _ai_tracker,
     create_initial_state,
     generate_ai_suggestion_tip,
-    generate_next_question_with_ai,
     get_pending_prompt,
     get_next_question,
     is_complete,
     process_user_message,
     process_user_message_stream,
 )
-from backend_app.ai.ai import MODEL_PROVIDER
+from backend_app.ai.classification import classify_issue_type_conflict_with_strong_model
+from backend_app.ai.conversation import apply_issue_type_arbitration_result
 from backend_app.core.logger import get_logger
 from backend_app.api.middleware.auth import require_auth
 from backend_app.services.permissions import can_create_ticket
+from backend_app.services.conversation_store import (
+    create_conversation_state,
+    delete_conversation_state,
+    get_conversation_record,
+    update_conversation_state,
+)
 from rag import build_suggested_action, search_similar_tickets
 
 logger = get_logger(__name__)
 bp = Blueprint("conversation", __name__)
 
-# In-memory conversation store.
-# Replace with Redis / DB for multi-worker / persistent deployments.
-CONVERSATION_STATES: dict = {}
-
-# Lightweight per-process limiter for session creation. The previous path used
-# a Firestore audit-log query for every init request even though init events are
-# not audit-logged, which added latency without enforcing a useful limit.
 INIT_RATE_LIMIT_EVENTS: defaultdict[str, deque[float]] = defaultdict(deque)
 INIT_RATE_LIMIT_LOCK = Lock()
 
 
-def _enforce_init_rate_limit(uid: str, limit: int = 10, window: int = 60) -> None:
+def _enforce_init_rate_limit(email: str, limit: int = 10, window: int = 60) -> None:
     now = time.monotonic()
     with INIT_RATE_LIMIT_LOCK:
-        events = INIT_RATE_LIMIT_EVENTS[uid]
+        events = INIT_RATE_LIMIT_EVENTS[email]
         cutoff = now - window
 
         while events and events[0] < cutoff:
@@ -70,56 +69,102 @@ def _enforce_init_rate_limit(uid: str, limit: int = 10, window: int = 60) -> Non
         events.append(now)
 
 
-# ── helpers ────────────────────────────────────────────────────────────────────
-
-def _resolve_question(
-    collected: dict,
-    missing: list,
-) -> tuple:
-    """Return (next_field, next_question, next_hints).
-
-    Always uses template-based questions for speed and consistency.
-    The field order and hints are determined by the deterministic flow engine.
-    """
+def _resolve_question(collected: dict, missing: list) -> tuple:
     next_field, template_question, next_hints = get_next_question(collected, missing)
     return next_field, template_question, next_hints
 
 
-def _verify_conversation(uid: str, conversation_id: str):
-    """Return (state, None) or (None, error_response).
-
-    Consolidates the repetitive ownership + existence checks.
-    """
-    if not conversation_id.startswith(uid):
+def _verify_conversation(email: str, conversation_id: str):
+    if not conversation_id.startswith(email):
         return None, (jsonify({"error": "Conversation not found"}), 404)
-    state = CONVERSATION_STATES.get(conversation_id)
-    if not state:
+    record = get_conversation_record(conversation_id)
+    if not record:
         return None, (jsonify({"error": "Conversation not found"}), 404)
+    owner_email = str(record.get("owner_email") or "")
+    if owner_email != email:
+        return None, (jsonify({"error": "Conversation not found"}), 404)
+    state = record.get("state") or {}
     return state, None
 
 
-# ── routes ─────────────────────────────────────────────────────────────────────
+def _maybe_start_issue_type_arbitration(conversation_id: str, state: dict) -> None:
+    pending = state.get("pending_issue_type_arbitration")
+    if not isinstance(pending, dict) or pending.get("status") != "pending":
+        return
+
+    running_state = {
+        **state,
+        "pending_issue_type_arbitration": {**pending, "status": "running"},
+    }
+    update_conversation_state(conversation_id, running_state)
+
+    def _worker() -> None:
+        try:
+            record = get_conversation_record(conversation_id)
+            if not record:
+                return
+            latest_state = record.get("state") or {}
+            latest_pending = latest_state.get("pending_issue_type_arbitration") or {}
+            if latest_pending.get("status") != "running":
+                return
+
+            collected_snapshot = latest_pending.get("collected_snapshot") or latest_state.get("collected", {})
+            result = classify_issue_type_conflict_with_strong_model(
+                collected=collected_snapshot,
+                direct_issue_type=latest_pending.get("direct_issue_type") or {},
+                local_issue_type=str(latest_pending.get("local_issue_type") or ""),
+            )
+
+            record = get_conversation_record(conversation_id)
+            if not record:
+                return
+            latest_state = record.get("state") or {}
+            if result:
+                updated_state = apply_issue_type_arbitration_result(latest_state, result)
+            else:
+                failed_pending = dict(latest_state.get("pending_issue_type_arbitration") or {})
+                failed_pending["status"] = "failed"
+                updated_state = {
+                    **latest_state,
+                    "pending_issue_type_arbitration": failed_pending,
+                }
+            update_conversation_state(conversation_id, updated_state)
+        except Exception as exc:
+            logger.error("issue_type_arbitration_worker error", conversation_id=conversation_id, exc_info=exc)
+
+    Thread(target=_worker, daemon=True).start()
+
 
 @bp.post("/api/conversation/init")
 @require_auth
 def init_conversation():
-    """Initialise a new conversational-form session."""
     try:
-        uid = g.uid
-        logger.info("Initialising conversation", uid=uid)
+        email = g.email
+        logger.info("Initialising conversation", email=email)
 
-        if not can_create_ticket(uid):
+        if not can_create_ticket(email):
             return jsonify({"error": "Permission denied"}), 403
 
         try:
-            _enforce_init_rate_limit(uid, limit=10, window=60)
+            _enforce_init_rate_limit(email, limit=10, window=60)
         except Exception as exc:
             return jsonify({"error": str(exc)}), 429
 
-        conversation_id = f"{uid}_{str(uuid.uuid4())[:8]}"
-        state = create_initial_state()
-        CONVERSATION_STATES[conversation_id] = state
-        _ai_tracker.start_session(conversation_id)
+        data = request.get_json(silent=True) or {}
+        requested_conversation_id = str(data.get("conversation_id") or "").strip()
+
+        conversation_id = requested_conversation_id
+        state = None
+        if requested_conversation_id and requested_conversation_id.startswith(email):
+            existing_record = get_conversation_record(requested_conversation_id)
+            if existing_record and str(existing_record.get("owner_email") or "") == email:
+                state = existing_record.get("state") or {}
+
+        if not state:
+            conversation_id = f"{email}_{str(uuid.uuid4())[:8]}"
+            state = create_initial_state()
+            create_conversation_state(conversation_id, email, state)
+            _ai_tracker.start_session(conversation_id)
 
         next_field, next_question, next_hints = get_pending_prompt(state)
         if not next_field:
@@ -128,15 +173,16 @@ def init_conversation():
             )
 
         return jsonify({
-            "conversation_id":  conversation_id,
-            "initial_message":  state["messages"][0]["content"],
-            "collected":        state["collected"],
-            "missing":          state["missing"],
-            "is_complete":      is_complete(state),
-            "turn":             state["turn"],
-            "next_field":       next_field,
-            "next_question":    next_question,
-            "next_hints":       next_hints,
+            "conversation_id": conversation_id,
+            "initial_message": state["messages"][0]["content"],
+            "messages": state.get("messages", []),
+            "collected": state["collected"],
+            "missing": state["missing"],
+            "is_complete": is_complete(state),
+            "turn": state["turn"],
+            "next_field": next_field,
+            "next_question": next_question,
+            "next_hints": next_hints,
         }), 200
 
     except Exception as exc:
@@ -147,10 +193,9 @@ def init_conversation():
 @bp.post("/api/conversation/<conversation_id>/suggestions")
 @require_auth
 def get_field_suggestions(conversation_id: str):
-    """Generate AI tips for category and severity from collected data so far."""
     try:
-        uid = g.uid
-        state, err = _verify_conversation(uid, conversation_id)
+        email = g.email
+        state, err = _verify_conversation(email, conversation_id)
         if err:
             return err
 
@@ -168,8 +213,10 @@ def get_field_suggestions(conversation_id: str):
         suggested_action = build_suggested_action(similar_tickets)
 
         suggestions = {}
-        if category_tip: suggestions["category"] = category_tip
-        if severity_tip: suggestions["severity"] = severity_tip
+        if category_tip:
+            suggestions["category"] = category_tip
+        if severity_tip:
+            suggestions["severity"] = severity_tip
 
         return jsonify({
             "suggestions": suggestions,
@@ -185,10 +232,9 @@ def get_field_suggestions(conversation_id: str):
 @bp.post("/api/conversation/<conversation_id>/skip")
 @require_auth
 def skip_remaining_fields(conversation_id: str):
-    """Mark optional fields as skipped when the reporter has no more information."""
     try:
-        uid = g.uid
-        state, err = _verify_conversation(uid, conversation_id)
+        email = g.email
+        state, err = _verify_conversation(email, conversation_id)
         if err:
             return err
 
@@ -208,9 +254,12 @@ def skip_remaining_fields(conversation_id: str):
 
         def _has_value(field_name: str) -> bool:
             value = state["collected"].get(field_name)
-            if isinstance(value, bool):  return True
-            if isinstance(value, str):   return value.strip() != ""
-            if isinstance(value, list):  return len(value) > 0
+            if isinstance(value, bool):
+                return True
+            if isinstance(value, str):
+                return value.strip() != ""
+            if isinstance(value, list):
+                return len(value) > 0
             return value is not None
 
         missing_required = [f for f in required_fields if not _has_value(f)]
@@ -218,15 +267,15 @@ def skip_remaining_fields(conversation_id: str):
             return jsonify({"error": "Required fields missing", "missing_required": missing_required}), 400
 
         state["missing"] = []
-        CONVERSATION_STATES[conversation_id] = state
+        update_conversation_state(conversation_id, state)
 
         return jsonify({
-            "success":    True,
-            "message":    "Optional fields skipped. Report is ready to submit.",
-            "collected":  state["collected"],
-            "missing":    state["missing"],
+            "success": True,
+            "message": "Optional fields skipped. Report is ready to submit.",
+            "collected": state["collected"],
+            "missing": state["missing"],
             "is_complete": True,
-            "turn":       state["turn"],
+            "turn": state["turn"],
         }), 200
 
     except Exception as exc:
@@ -237,10 +286,9 @@ def skip_remaining_fields(conversation_id: str):
 @bp.post("/api/conversation/<conversation_id>/message")
 @require_auth
 def send_message(conversation_id: str):
-    """Send a message to the conversational form (non-streaming)."""
     try:
-        uid = g.uid
-        state, err = _verify_conversation(uid, conversation_id)
+        email = g.email
+        state, err = _verify_conversation(email, conversation_id)
         if err:
             return err
 
@@ -252,7 +300,8 @@ def send_message(conversation_id: str):
         updated_state, assistant_message, extracted_fields = process_user_message(
             user_message, state
         )
-        CONVERSATION_STATES[conversation_id] = updated_state
+        update_conversation_state(conversation_id, updated_state)
+        _maybe_start_issue_type_arbitration(conversation_id, updated_state)
 
         next_field, next_question, next_hints = get_pending_prompt(updated_state)
         if not next_field:
@@ -264,15 +313,15 @@ def send_message(conversation_id: str):
             _ai_tracker.print_summary()
 
         return jsonify({
-            "extracted_fields":  extracted_fields,
+            "extracted_fields": extracted_fields,
             "assistant_message": assistant_message,
-            "collected":         updated_state["collected"],
-            "missing":           updated_state["missing"],
-            "is_complete":       is_complete(updated_state),
-            "turn":              updated_state["turn"],
-            "next_field":        next_field,
-            "next_question":     next_question,
-            "next_hints":        next_hints,
+            "collected": updated_state["collected"],
+            "missing": updated_state["missing"],
+            "is_complete": is_complete(updated_state),
+            "turn": updated_state["turn"],
+            "next_field": next_field,
+            "next_question": next_question,
+            "next_hints": next_hints,
         }), 200
 
     except Exception as exc:
@@ -283,10 +332,9 @@ def send_message(conversation_id: str):
 @bp.post("/api/conversation/<conversation_id>/message/stream")
 @require_auth
 def send_message_stream(conversation_id: str):
-    """Send a message with a streaming Server-Sent Events response."""
     try:
-        uid = g.uid
-        state, err = _verify_conversation(uid, conversation_id)
+        email = g.email
+        state, err = _verify_conversation(email, conversation_id)
         if err:
             return err
 
@@ -306,7 +354,7 @@ def send_message_stream(conversation_id: str):
 
                     elif event_type == "field_update":
                         payload = {
-                            "type":  "field_update",
+                            "type": "field_update",
                             "field": event.get("field", ""),
                             "value": event.get("value"),
                         }
@@ -316,7 +364,8 @@ def send_message_stream(conversation_id: str):
 
                     elif event_type == "done":
                         final_state = event["state"]
-                        CONVERSATION_STATES[conversation_id] = final_state
+                        update_conversation_state(conversation_id, final_state)
+                        _maybe_start_issue_type_arbitration(conversation_id, final_state)
                         next_field, next_question, next_hints = get_pending_prompt(final_state)
                         if not next_field:
                             next_field, next_question, next_hints = _resolve_question(
@@ -326,15 +375,15 @@ def send_message_stream(conversation_id: str):
                             _ai_tracker.print_summary()
 
                         payload = {
-                            "type":              "done",
+                            "type": "done",
                             "assistant_message": event.get("assistant_message", ""),
-                            "collected":         final_state["collected"],
-                            "missing":           final_state["missing"],
-                            "is_complete":       is_complete(final_state),
-                            "turn":              final_state["turn"],
-                            "next_field":        next_field,
-                            "next_question":     next_question,
-                            "next_hints":        next_hints,
+                            "collected": final_state["collected"],
+                            "missing": final_state["missing"],
+                            "is_complete": is_complete(final_state),
+                            "turn": final_state["turn"],
+                            "next_field": next_field,
+                            "next_question": next_question,
+                            "next_hints": next_hints,
                         }
 
                     elif event_type == "error":
@@ -363,19 +412,37 @@ def send_message_stream(conversation_id: str):
 @bp.get("/api/conversation/<conversation_id>/data")
 @require_auth
 def get_conversation_data(conversation_id: str):
-    """Return the current collected data for a conversation."""
     try:
-        uid = g.uid
-        state, err = _verify_conversation(uid, conversation_id)
+        email = g.email
+        state, err = _verify_conversation(email, conversation_id)
         if err:
             return err
 
         return jsonify({
-            "collected":   state["collected"],
-            "missing":     state["missing"],
+            "collected": state["collected"],
+            "missing": state["missing"],
             "is_complete": is_complete(state),
+            "messages": state.get("messages", []),
+            "turn": state.get("turn", 0),
         }), 200
 
     except Exception as exc:
         logger.error("get_conversation_data error", conversation_id=conversation_id, exc_info=exc)
+        return jsonify({"error": str(exc)}), 500
+
+
+@bp.delete("/api/conversation/<conversation_id>")
+@require_auth
+def delete_conversation(conversation_id: str):
+    try:
+        email = g.email
+        _state, err = _verify_conversation(email, conversation_id)
+        if err:
+            return err
+
+        delete_conversation_state(conversation_id)
+        return jsonify({"deleted": True}), 200
+
+    except Exception as exc:
+        logger.error("delete_conversation error", conversation_id=conversation_id, exc_info=exc)
         return jsonify({"error": str(exc)}), 500

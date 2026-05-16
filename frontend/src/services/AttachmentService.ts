@@ -51,8 +51,7 @@ async function uploadAttachmentDocument(
     download_url: downloadUrl,
     content_type: file.type,
     size: file.size,
-    uploaded_by_uid: uploadedByUid,
-    uploaded_by_email: uploadedByEmail || "",
+    uploaded_by_email: uploadedByEmail || uploadedByUid,
     uploaded_at: serverTimestamp(),
   };
 
@@ -65,7 +64,6 @@ async function uploadAttachmentDocument(
     download_url: payload.download_url,
     content_type: payload.content_type,
     size: payload.size,
-    uploaded_by_uid: payload.uploaded_by_uid,
     uploaded_by_email: payload.uploaded_by_email,
     uploaded_at: payload.uploaded_at as unknown as FirestoreValue,
   };
@@ -108,7 +106,7 @@ export async function addTicketAttachment(
     try {
       await updateDoc(doc(db, "tickets", ticketId), {
         updated_at: serverTimestamp(),
-        updated_by_uid: uploadedByUid,
+        updated_by_email: uploadedByEmail || uploadedByUid,
         has_attachment: true,
       });
     } catch (error) {
@@ -116,12 +114,12 @@ export async function addTicketAttachment(
       // Reporter rules may reject has_attachment updates; keep activity timestamp in sync.
       await updateDoc(doc(db, "tickets", ticketId), {
         updated_at: serverTimestamp(),
-        updated_by_uid: uploadedByUid,
+        updated_by_email: uploadedByEmail || uploadedByUid,
       });
     }
 
     await logAuditEntry({
-      uid: uploadedByUid,
+      actorEmail: uploadedByEmail || uploadedByUid,
       action: "add_attachment",
       ticketId,
       details: {
@@ -168,7 +166,7 @@ export async function logAttachmentDownload(params: {
 }) {
   try {
     await logAuditEntry({
-      uid: params.downloadedByUid,
+      actorEmail: params.downloadedByUid,
       action: "download_attachment",
       ticketId: params.ticketId,
       details: {

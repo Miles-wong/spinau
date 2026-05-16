@@ -59,12 +59,14 @@ from backend_app.api.routes.admin_exports import bp as admin_exports_bp
 from backend_app.api.routes.conversation import bp as conversation_bp
 from backend_app.api.routes.notifications import bp as notifications_bp
 from backend_app.api.routes.tickets import bp as tickets_bp
+from backend_app.api.routes.users import bp as users_bp
 
 app.register_blueprint(tickets_bp)
 app.register_blueprint(attachments_bp)
 app.register_blueprint(conversation_bp)
 app.register_blueprint(admin_exports_bp)
 app.register_blueprint(notifications_bp)
+app.register_blueprint(users_bp)
 
 
 @app.get("/api/health")

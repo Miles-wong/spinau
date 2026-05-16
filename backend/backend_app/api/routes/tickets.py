@@ -73,9 +73,9 @@ def _serialize_ticket_snapshot(ticket_data, similar_tickets):
 class TicketAlreadyAssignedError(Exception):
     """Raised when an admin tries to claim a ticket already assigned."""
 
-    def __init__(self, assigned_to_uid: str, assigned_to_name: str):
+    def __init__(self, assigned_to_email: str, assigned_to_name: str):
         super().__init__("Ticket is already assigned")
-        self.assigned_to_uid = assigned_to_uid
+        self.assigned_to_email = assigned_to_email
         self.assigned_to_name = assigned_to_name
 
 
@@ -91,17 +91,17 @@ def validate_and_classify_endpoint():
     Permission check + rate limit + data validation + RAG search (for category hints).
     """
     try:
-        uid = g.uid
-        logger.info("validate-and-classify request", uid=uid)
+        email = g.email
+        logger.info("validate-and-classify request", email=email)
 
-        if not can_create_ticket(uid):
-            logger.warning("Permission denied", uid=uid, route="validate-and-classify")
+        if not can_create_ticket(email):
+            logger.warning("Permission denied", email=email, route="validate-and-classify")
             return jsonify({"valid": False, "error": get_validation_errors()["insufficient_permissions"]}), 403
 
         try:
-            enforce_rate_limit(uid, "create_ticket", limit=RATE_LIMIT_CREATE_TICKET_PER_WINDOW, window=RATE_LIMIT_WINDOW_SECONDS)
+            enforce_rate_limit(email, "create_ticket", limit=RATE_LIMIT_CREATE_TICKET_PER_WINDOW, window=RATE_LIMIT_WINDOW_SECONDS)
         except Exception as exc:
-            logger.warning("Rate limit exceeded", uid=uid, error=str(exc))
+            logger.warning("Rate limit exceeded", email=email, error=str(exc))
             return jsonify({"valid": False, "error": str(exc)}), 429
 
         data = request.get_json()
@@ -141,7 +141,7 @@ def get_similar_tickets_for_ticket(ticket_id: str):
     Used only in TicketDetailView when canEdit=true (admin). Filters out self-references.
     """
     try:
-        uid = g.uid
+        email = g.email
         db = get_firestore_db()
         ticket_ref = db.collection("tickets").document(ticket_id)
         snapshot = ticket_ref.get()
@@ -150,8 +150,8 @@ def get_similar_tickets_for_ticket(ticket_id: str):
             return jsonify({"error": "Ticket not found"}), 404
 
         ticket_data = snapshot.to_dict() or {}
-        created_by_uid = str(ticket_data.get("created_by_uid") or ticket_data.get("created_by") or "")
-        if not can_view_ticket(uid, created_by_uid):
+        created_by_email = str(ticket_data.get("created_by_email") or "")
+        if not can_view_ticket(email, created_by_email):
             return jsonify({"error": "Permission denied"}), 403
 
         description = str(ticket_data.get("description") or "").strip()
@@ -180,13 +180,13 @@ def get_similar_tickets_for_ticket(ticket_id: str):
 def claim_ticket_endpoint(ticket_id: str):
     """Atomically assign an unassigned ticket to the current admin."""
     try:
-        uid = g.uid
-        if not can_update_ticket(uid):
+        email = g.email
+        if not can_update_ticket(email):
             return jsonify({"error": "Insufficient permissions: cannot claim ticket"}), 403
 
         db = get_firestore_db()
         ticket_ref = db.collection("tickets").document(ticket_id)
-        assignee_name = get_user_display_name(uid)
+        assignee_name = get_user_display_name(email)
         transaction = db.transaction()
 
         @firestore.transactional
@@ -196,7 +196,7 @@ def claim_ticket_endpoint(ticket_id: str):
                 raise TicketNotFoundError()
 
             ticket_data = snapshot.to_dict() or {}
-            existing_assignee = str(ticket_data.get("assigned_to_uid") or "").strip()
+            existing_assignee = str(ticket_data.get("assigned_to_email") or "").strip()
             if existing_assignee:
                 raise TicketAlreadyAssignedError(
                     existing_assignee,
@@ -207,11 +207,11 @@ def claim_ticket_endpoint(ticket_id: str):
             next_status = "assigned" if current_status in {"", "open"} else current_status
 
             txn.update(ticket_ref, {
-                "assigned_to_uid": uid,
+                "assigned_to_email": email,
                 "assigned_to_name": assignee_name,
                 "status": next_status,
                 "updated_at": firestore.SERVER_TIMESTAMP,
-                "updated_by_uid": uid,
+                "updated_by_email": email,
                 "last_update_hint": f"assigned to {assignee_name}",
             })
 
@@ -224,12 +224,12 @@ def claim_ticket_endpoint(ticket_id: str):
         result = _claim_in_transaction(transaction)
 
         log_action(
-            uid=uid,
+            actor_email=email,
             action="claim_ticket",
             resource_type="ticket",
             resource_id=ticket_id,
             details={
-                "assigned_to_uid": uid,
+                "assigned_to_email": email,
                 "assigned_to_name": assignee_name,
                 "previous_status": result.get("previous_status"),
                 "status": result.get("status"),
@@ -239,11 +239,11 @@ def claim_ticket_endpoint(ticket_id: str):
 
         try:
             create_ticket_event_notifications(
-                actor_uid=uid,
+                actor_email=email,
                 event_type="ticket_assigned",
                 ticket_doc_id=ticket_id,
                 metadata={
-                    "assigned_to_uid": uid,
+                    "assigned_to_email": email,
                     "assigned_to_name": assignee_name,
                 },
             )
@@ -253,7 +253,7 @@ def claim_ticket_endpoint(ticket_id: str):
         return jsonify({
             "claimed": True,
             "ticket_id": result.get("ticket_id"),
-            "assigned_to_uid": uid,
+            "assigned_to_email": email,
             "assigned_to_name": assignee_name,
             "status": result.get("status"),
         }), 200
@@ -262,7 +262,7 @@ def claim_ticket_endpoint(ticket_id: str):
         return jsonify({
             "claimed": False,
             "error": "Ticket is already assigned",
-            "assigned_to_uid": exc.assigned_to_uid,
+            "assigned_to_email": exc.assigned_to_email,
             "assigned_to_name": exc.assigned_to_name,
         }), 409
     except TicketNotFoundError:
@@ -277,11 +277,11 @@ def claim_ticket_endpoint(ticket_id: str):
 def log_ticket_created_endpoint():
     """Write an audit-log entry after the frontend creates the Firestore document."""
     try:
-        uid = g.uid
+        email = g.email
         data = request.get_json() or {}
 
         log_action(
-            uid=uid,
+            actor_email=email,
             action="create_ticket",
             resource_type="ticket",
             resource_id=data.get("doc_id", ""),

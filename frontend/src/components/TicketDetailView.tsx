@@ -15,7 +15,6 @@ import {
   claimTicket,
   getReporterMissingFieldKeys,
   getTicketDetail,
-  getSimilarTickets,
   updateTicketAdminFields,
   updateTicketReporterMissingFields,
 } from "../services/TicketService";
@@ -24,8 +23,6 @@ import { getTicketAttachments, addTicketAttachment, downloadTicketAttachment } f
 import { getTicketAuditLogs } from "../services/AuditService";
 import { listUsersByRole, resolveUserLabels } from "../services/AuthService";
 import type { AuditLog, FirestoreValue, TicketAttachment, TicketComment } from "../services/ServiceTypes";
-import type { SimilarTicketResult } from "../services/TicketValidationService";
-import SimilarTicketsCard from "./SimilarTicketsCard";
 import { useToast } from "./toastContext";
 import { trackUxEvent } from "../services/uxTelemetry";
 import { toUserFacingMessage } from "../services/userFacingMessage";
@@ -90,7 +87,7 @@ type AttachmentPreviewState = {
   textContent?: string;
 };
 type UserRoleOption = {
-  uid: string;
+  email: string;
   label: string;
 };
 
@@ -290,7 +287,7 @@ function BooleanInput({ label, value, onChange }: { label: string; value: string
 function UserSelectInput({ label, value, onChange, options }: {
   label: string;
   value: string;
-  onChange: (uid: string) => void;
+  onChange: (email: string) => void;
   options: UserRoleOption[];
 }) {
   return (
@@ -303,7 +300,7 @@ function UserSelectInput({ label, value, onChange, options }: {
       >
         <option value="">Unassigned</option>
         {options.map((option) => (
-          <option key={option.uid} value={option.uid}>
+          <option key={option.email} value={option.email}>
             {option.label}
           </option>
         ))}
@@ -343,15 +340,11 @@ export default function TicketDetailView({ ticketId, user, backPath, canEdit, sh
   const [quickStatus, setQuickStatus] = useState("open");
   const [quickSeverity, setQuickSeverity] = useState("");
   const [quickCategory, setQuickCategory] = useState("");
-  const [quickAssignedToUid, setQuickAssignedToUid] = useState("");
+  const [quickAssignedToEmail, setQuickAssignedToEmail] = useState("");
   const [reporterDraft, setReporterDraft] = useState<Record<string, string>>({});
   const [reporterSaving, setReporterSaving] = useState(false);
   const [userLabels, setUserLabels] = useState<Record<string, string>>({});
   const [adminUsers, setAdminUsers] = useState<UserRoleOption[]>([]);
-  const [similarTickets, setSimilarTickets] = useState<SimilarTicketResult[]>([]);
-  const [suggestedAction, setSuggestedAction] = useState("");
-  const [showSimilarTickets, setShowSimilarTickets] = useState(true);
-  const [similarLoaded, setSimilarLoaded] = useState(false);
 
   const loadAll = useCallback(async () => {
     setState("loading");
@@ -403,12 +396,12 @@ export default function TicketDetailView({ ticketId, user, backPath, canEdit, sh
       const uidSet = new Set<string>();
       const maybeAdd = (v: unknown) => { if (typeof v === "string" && v) uidSet.add(v); };
       const td = ticketData as Record<string, unknown>;
-      maybeAdd(td.created_by_uid);
-      maybeAdd(td.assigned_to_uid);
-      maybeAdd(td.closed_by_uid);
-      maybeAdd(td.updated_by_uid);
+      maybeAdd(td.created_by_email);
+      maybeAdd(td.assigned_to_email);
+      maybeAdd(td.closed_by_email);
+      maybeAdd(td.updated_by_email);
       if (auditResult.status === "fulfilled") {
-        (auditResult.value as AuditLog[]).forEach((log) => maybeAdd(log.uid));
+        (auditResult.value as AuditLog[]).forEach((log) => maybeAdd(log.actor_email));
       }
       const labels = await resolveUserLabels([...uidSet]);
       setUserLabels(labels);
@@ -467,23 +460,6 @@ export default function TicketDetailView({ ticketId, user, backPath, canEdit, sh
       });
   }, [canEdit]);
 
-  // Fetch similar tickets for admin after the ticket has loaded.
-  useEffect(() => {
-    if (!canEdit || !ticket || similarLoaded) return;
-    setSimilarLoaded(true);
-    getSimilarTickets(ticketId)
-      .then((result) => {
-        if (result.similar_tickets.length > 0) {
-          setSimilarTickets(result.similar_tickets);
-          setSuggestedAction(result.suggested_action || "");
-          setShowSimilarTickets(true);
-        }
-      })
-      .catch(() => {
-        // Non-critical — fail silently, admin can still triage without it.
-      });
-  }, [canEdit, ticket, ticketId, similarLoaded]);
-
   useEffect(() => {
     if (info && !commentSubmitting && !filesUploading && !downloadingAttachmentId) {
       const timer = setTimeout(() => setInfo(""), 2000);
@@ -503,7 +479,7 @@ export default function TicketDetailView({ ticketId, user, backPath, canEdit, sh
     setQuickStatus(asRawText(ticket.status, "open"));
     setQuickSeverity(asRawText(ticket.severity));
     setQuickCategory(asRawText(ticket.category));
-    setQuickAssignedToUid(asRawText(ticket.assigned_to_uid));
+    setQuickAssignedToEmail(asRawText(ticket.assigned_to_email));
   }, [ticket]);
 
   useEffect(() => {
@@ -529,7 +505,7 @@ export default function TicketDetailView({ ticketId, user, backPath, canEdit, sh
   const labelForAssignedTo = (): string => {
     const assignedName = String(ticket?.assigned_to_name || "").trim();
     if (assignedName) return assignedName;
-    return labelFor(ticket?.assigned_to_uid);
+    return labelFor(ticket?.assigned_to_email);
   };
 
   const summary = useMemo(() => {
@@ -542,7 +518,7 @@ export default function TicketDetailView({ ticketId, user, backPath, canEdit, sh
       category: asText(ticket.category),
       createdAt: asText(ticket.created_at),
       updatedAt: asText(ticket.updated_at),
-      createdBy: labelFor(ticket.created_by_uid),
+      createdBy: labelFor(ticket.created_by_email),
       assignedTo: labelForAssignedTo(),
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -551,27 +527,27 @@ export default function TicketDetailView({ ticketId, user, backPath, canEdit, sh
   const assigneeOptions = useMemo(() => {
     const map = new Map<string, string>();
     adminUsers.forEach((userOption) => {
-      map.set(userOption.uid, userOption.label);
+      map.set(userOption.email, userOption.label);
     });
 
-    if (quickAssignedToUid && !map.has(quickAssignedToUid)) {
-      map.set(quickAssignedToUid, userLabels[quickAssignedToUid] || quickAssignedToUid);
+    if (quickAssignedToEmail && !map.has(quickAssignedToEmail)) {
+      map.set(quickAssignedToEmail, userLabels[quickAssignedToEmail] || quickAssignedToEmail);
     }
 
-    return [...map.entries()].map(([uid, label]) => ({ uid, label }));
-  }, [adminUsers, quickAssignedToUid, userLabels]);
+    return [...map.entries()].map(([email, label]) => ({ email, label }));
+  }, [adminUsers, quickAssignedToEmail, userLabels]);
 
   const navState = (location.state as TicketDetailNavState | null) ?? null;
   const notificationHint = normalizeUpdateHint(navState?.updateHint);
   const ticketHint = normalizeUpdateHint(ticket?.last_update_hint);
-  const updatedByUid = String(ticket?.updated_by_uid || "").trim();
-  const ticketUpdatedByOther = !canEdit && !!updatedByUid && updatedByUid !== user.uid;
-  const ticketUpdateUnknownActorButMeaningful = !canEdit && !updatedByUid && hasMeaningfulUpdateHint(ticket?.last_update_hint);
+  const updatedByEmail = String(ticket?.updated_by_email || "").trim();
+  const ticketUpdatedByOther = !canEdit && !!updatedByEmail && updatedByEmail !== user.email;
+  const ticketUpdateUnknownActorButMeaningful = !canEdit && !updatedByEmail && hasMeaningfulUpdateHint(ticket?.last_update_hint);
   const fromNotification = !canEdit && !!navState?.fromNotification && !!notificationHint;
   const reporterUpdateHint = fromNotification
     ? notificationHint
     : ((ticketUpdatedByOther || ticketUpdateUnknownActorButMeaningful) ? ticketHint : "");
-  const canClaimTicket = canEdit && state === "ok" && !String(ticket?.assigned_to_uid || "").trim();
+  const canClaimTicket = canEdit && state === "ok" && !String(ticket?.assigned_to_email || "").trim();
 
   const activityTabs = useMemo(() => {
     const tabs: Array<{ key: ActivityTab; label: string; count: number }> = [
@@ -664,7 +640,7 @@ export default function TicketDetailView({ ticketId, user, backPath, canEdit, sh
     setInfo("Saving missing fields...");
     setSuccess("");
     try {
-      await updateTicketReporterMissingFields(ticketId, updates, user.uid);
+      await updateTicketReporterMissingFields(ticketId, updates, user.email || "");
       await loadAll();
       setSuccess("Missing fields were updated successfully.");
       showToast({
@@ -810,7 +786,7 @@ export default function TicketDetailView({ ticketId, user, backPath, canEdit, sh
     setInfo("Submitting comment......");
     setSuccess("");
     try {
-      await addTicketComment(ticketId, commentInput, user.uid, user.email);
+      await addTicketComment(ticketId, commentInput, user.email || "");
       setCommentInput("");
       // only reload comments, no full page reload
       const freshComments = await getTicketComments(ticketId);
@@ -855,7 +831,7 @@ export default function TicketDetailView({ ticketId, user, backPath, canEdit, sh
     setInfo(`Uploading ${filesToUpload.length} file(s)...`);
     setSuccess("");
     try {
-      await Promise.all(filesToUpload.map((file) => addTicketAttachment(ticketId, file, user.uid, user.email)));
+      await Promise.all(filesToUpload.map((file) => addTicketAttachment(ticketId, file, user.email || "", user.email)));
       setNewFiles([]);
       // only reload attachments, no full page reload
       const freshAttachments = await getTicketAttachments(ticketId);
@@ -900,7 +876,7 @@ export default function TicketDetailView({ ticketId, user, backPath, canEdit, sh
     setInfo("Deleting comment...");
     setSuccess("");
     try {
-      await deleteTicketComment(ticketId, comment.id, user.uid);
+      await deleteTicketComment(ticketId, comment.id, user.email || "");
       const freshComments = await getTicketComments(ticketId);
       setComments(freshComments);
       setSuccess("Comment deleted successfully.");
@@ -1048,12 +1024,12 @@ export default function TicketDetailView({ ticketId, user, backPath, canEdit, sh
           status: quickStatus,
           severity: quickSeverity,
           category: quickCategory,
-          assigned_to_uid: quickAssignedToUid.trim() || null,
-          assigned_to_name: quickAssignedToUid.trim()
-            ? (assigneeOptions.find((option) => option.uid === quickAssignedToUid)?.label || quickAssignedToUid)
+          assigned_to_email: quickAssignedToEmail.trim() || null,
+          assigned_to_name: quickAssignedToEmail.trim()
+            ? (assigneeOptions.find((option) => option.email === quickAssignedToEmail)?.label || quickAssignedToEmail)
             : null,
         },
-        user.uid
+        user.email || ""
       );
       await loadAll();
       showToast({
@@ -1191,13 +1167,6 @@ export default function TicketDetailView({ ticketId, user, backPath, canEdit, sh
                     <p className="mt-1 text-sm text-slate-600">Fast decision summary only.</p>
 
                     <div className="mt-4 space-y-4 min-h-[430px]">
-                      {showSimilarTickets && similarTickets.length > 0 && (
-                        <SimilarTicketsCard
-                          tickets={similarTickets}
-                          suggestedAction={suggestedAction}
-                          onDismiss={() => setShowSimilarTickets(false)}
-                        />
-                      )}
                       <div className="rounded-xl border border-slate-200 bg-white p-4">
                         <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Core Signal</div>
                         <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -1245,8 +1214,8 @@ export default function TicketDetailView({ ticketId, user, backPath, canEdit, sh
                         <SelectInput label="Category" value={quickCategory} onChange={setQuickCategory} options={CATEGORY_OPTIONS} />
                         <UserSelectInput
                           label="Assigned to"
-                          value={quickAssignedToUid}
-                          onChange={setQuickAssignedToUid}
+                          value={quickAssignedToEmail}
+                          onChange={setQuickAssignedToEmail}
                           options={assigneeOptions}
                         />
                       </div>
@@ -1487,14 +1456,14 @@ export default function TicketDetailView({ ticketId, user, backPath, canEdit, sh
                     <div className="max-h-[30rem] space-y-3 overflow-y-auto pr-1">
                       {comments.length === 0 && <div className="text-sm text-slate-500">No comments yet.</div>}
                       {comments.map((comment) => {
-                        const canDeleteOwnComment = comment.created_by_uid === user.uid;
+                        const canDeleteOwnComment = comment.created_by_email === user.email;
                         const deleting = deletingCommentId === comment.id;
                         return (
                         <div key={comment.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                           <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0 flex-1">
                               <div className="text-sm text-slate-800">{comment.message}</div>
-                              <div className="mt-2 text-xs text-slate-500">{asText(comment.created_by_email || comment.created_by_uid)} | {asText(comment.created_at)}</div>
+                              <div className="mt-2 text-xs text-slate-500">{asText(comment.created_by_email)} | {asText(comment.created_at)}</div>
                             </div>
                             {canDeleteOwnComment && (
                               <button
@@ -1585,7 +1554,7 @@ export default function TicketDetailView({ ticketId, user, backPath, canEdit, sh
                           <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0 flex-1">
                               <div className="truncate text-sm font-semibold text-slate-900">{attachment.name}</div>
-                              <div className="mt-1 text-xs text-slate-500">{asText(attachment.uploaded_by_email || attachment.uploaded_by_uid)} | {asText(attachment.uploaded_at)}</div>
+                              <div className="mt-1 text-xs text-slate-500">{asText(attachment.uploaded_by_email)} | {asText(attachment.uploaded_at)}</div>
                               <div className="mt-1 text-xs text-slate-400">
                                 {formatAttachmentMeta(attachment) || "No preview metadata available"}
                               </div>
@@ -1641,7 +1610,7 @@ export default function TicketDetailView({ ticketId, user, backPath, canEdit, sh
                             <div className="text-sm font-semibold text-slate-900">{getAuditTitle(String(log.action || "unknown"))}</div>
                             <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600">{asText(log.status, "success")}</span>
                           </div>
-                          <div className="mt-1 text-xs text-slate-500">Actor: {labelFor(log.uid)} | {log.created_at ? new Date(String(log.created_at)).toLocaleString() : "-"}</div>
+                          <div className="mt-1 text-xs text-slate-500">Actor: {labelFor(log.actor_email)} | {log.created_at ? new Date(String(log.created_at)).toLocaleString() : "-"}</div>
                           {log.action === "admin_update_ticket" && (() => {
                             const details = (log.details || {}) as Record<string, unknown>;
                             const changes = typeof details.changes === "object" && details.changes

@@ -6,6 +6,7 @@
  */
 
 const HEALTH_CHECK_TIMEOUT = 5000; // 5 seconds
+const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
 
 export interface HealthStatus {
   status: "ok" | "warning" | "error";
@@ -42,13 +43,13 @@ export interface HealthCheckResult {
  */
 export async function checkBackendHealth(): Promise<HealthCheckResult> {
   try {
-    console.log("[HealthService] Checking backend health at /api/health");
+    const healthUrl = `${API_BASE_URL}/api/health`;
+    console.log("[HealthService] Checking backend health at", healthUrl);
     
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), HEALTH_CHECK_TIMEOUT);
 
-    // Use relative URL to leverage Vite proxy in dev mode
-    const response = await fetch("/api/health", {
+    const response = await fetch(healthUrl, {
       method: "GET",
       signal: controller.signal,
     });

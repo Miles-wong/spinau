@@ -46,49 +46,84 @@ def get_firestore_db():
     return _db
 
 
-def get_user_role(uid: str) -> str:
+def _get_user_doc_by_email(email: str):
+    """Return first users document that matches an authenticated email."""
+    if not email:
+        return None
+
+    db = get_firestore_db()
+    if "@" not in email:
+        legacy_uid_doc = db.collection("users").document(email).get()
+        if legacy_uid_doc.exists:
+            return legacy_uid_doc
+    snapshot = (
+        db.collection("users")
+        .where(filter=FieldFilter("email", "==", email))
+        .limit(1)
+        .get()
+    )
+    if snapshot:
+        return snapshot[0]
+
+    normalized = email.strip().lower()
+    if normalized and normalized != email:
+        snapshot = (
+            db.collection("users")
+            .where(filter=FieldFilter("email", "==", normalized))
+            .limit(1)
+            .get()
+        )
+        if snapshot:
+            return snapshot[0]
+
+    # Backward compatibility: some environments still use email as document id.
+    legacy_doc = db.collection("users").document(normalized or email).get()
+    return legacy_doc if legacy_doc.exists else None
+
+
+def get_user_role(email: str) -> str:
     """
     Get user role from Firestore users collection.
 
     Args:
-        uid: Firebase user ID
+        email: Authenticated user email
 
     Returns:
         str: "admin", "reporter", or "" (empty if not found)
     """
     try:
         now = time.monotonic()
-        cached = _user_role_cache.get(uid)
+        email = (email or "").strip()
+        cached = _user_role_cache.get(email)
         if cached and cached[1] > now:
             # Return cached role to avoid repeated Firestore lookups
             return cached[0]
 
-        db = get_firestore_db()
-        user_doc = db.collection("users").document(uid).get()
+        user_doc = _get_user_doc_by_email(email)
 
-        if not user_doc.exists:
-            logger.info("User not found in Firestore users collection", uid=uid)
-            _user_role_cache[uid] = ("", now + USER_ROLE_CACHE_TTL_SECONDS)
+        if not user_doc or not user_doc.exists:
+            logger.info("User not found in Firestore users collection", email=email)
+            _user_role_cache[email] = ("", now + USER_ROLE_CACHE_TTL_SECONDS)
             return ""
 
         role = user_doc.get("role") or ""
-        logger.info("Resolved user role", uid=uid, role=role)
+        logger.info("Resolved user role", email=email, role=role)
 
         if role in ["admin", "reporter"]:
-            _user_role_cache[uid] = (role, now + USER_ROLE_CACHE_TTL_SECONDS)
+            _user_role_cache[email] = (role, now + USER_ROLE_CACHE_TTL_SECONDS)
             return role
 
-        logger.warning("User has invalid role", uid=uid, role=role)
-        _user_role_cache[uid] = ("", now + USER_ROLE_CACHE_TTL_SECONDS)
+        logger.warning("User has invalid role", email=email, role=role)
+        _user_role_cache[email] = ("", now + USER_ROLE_CACHE_TTL_SECONDS)
         return ""
 
     except Exception as e:
-        logger.error("Error getting user role", uid=uid, exc_info=e)
+        logger.error("Error getting user role", email=email, exc_info=e)
         return ""
 
 
 def check_rate_limit(
-    uid: str, action: str = "create_ticket", limit: int = 5, window_seconds: int = 60
+    email: str, action: str = "create_ticket", limit: int = 5, window_seconds: int = 60
 ) -> bool:
     """
     Check if user has exceeded rate limit.
@@ -96,7 +131,7 @@ def check_rate_limit(
     Uses Firestore timestamps to track recent actions.
 
     Args:
-        uid: User ID
+        email: Authenticated user email
         action: Action name
         limit: Max actions in window
         window_seconds: Time window
@@ -110,11 +145,13 @@ def check_rate_limit(
 
         cutoff_time = datetime.now(timezone.utc) - timedelta(seconds=window_seconds)
 
+        identifier_field = "actor_email" if "@" in (email or "") else "uid"
+
         # Fast path: server-side time filter (requires composite index)
         try:
             docs = (
                 db.collection("audit_logs")
-                .where(filter=FieldFilter("uid", "==", uid))
+                .where(filter=FieldFilter(identifier_field, "==", email))
                 .where(filter=FieldFilter("action", "==", action))
                 .where(filter=FieldFilter("created_at", ">", cutoff_time))
                 .stream()
@@ -123,7 +160,7 @@ def check_rate_limit(
             count = sum(1 for _ in docs)
             logger.info(
                 "Rate limit fast query",
-                uid=uid,
+                email=email,
                 action=action,
                 count=count,
                 limit=limit,
@@ -139,13 +176,13 @@ def check_rate_limit(
 
             logger.warning(
                 "Missing composite index for rate limit query; using fallback filter",
-                uid=uid,
+                email=email,
                 action=action,
             )
 
             docs = (
                 db.collection("audit_logs")
-                .where(filter=FieldFilter("uid", "==", uid))
+                .where(filter=FieldFilter(identifier_field, "==", email))
                 .where(filter=FieldFilter("action", "==", action))
                 .stream()
             )
@@ -175,7 +212,7 @@ def check_rate_limit(
 
             logger.info(
                 "Rate limit fallback query",
-                uid=uid,
+                email=email,
                 action=action,
                 count=count,
                 limit=limit,
@@ -186,7 +223,7 @@ def check_rate_limit(
     except Exception as e:
         logger.warning(
             "Error checking rate limit, allowing request",
-            uid=uid,
+            email=email,
             action=action,
             exc_info=e,
         )
@@ -195,7 +232,7 @@ def check_rate_limit(
 
 
 def log_action(
-    uid: str,
+    actor_email: str,
     action: str,
     resource_type: str,
     resource_id: Optional[str] = None,
@@ -209,7 +246,7 @@ def log_action(
     Log an action to Firestore audit_logs collection.
 
     Args:
-        uid: User ID
+        actor_email: Authenticated user email
         action: Action name (e.g., "create_ticket", "classify_incident")
         resource_type: Type of resource (e.g., "ticket", "incident")
         resource_id: ID of resource
@@ -226,7 +263,10 @@ def log_action(
         db = get_firestore_db()
         from firebase_admin import firestore as fs
 
+        actor_email = (actor_email or uid or "").strip().lower()
+
         log_data = {
+            "actor_email": actor_email,
             "uid": uid,
             "action": action,
             "resource_type": resource_type,
@@ -245,7 +285,7 @@ def log_action(
     except Exception as e:
         logger.error(
             "Error logging action",
-            uid=uid,
+            actor_email=actor_email,
             action=action,
             resource_type=resource_type,
             exc_info=e,

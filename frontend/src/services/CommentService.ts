@@ -50,8 +50,7 @@ export async function getTicketComments(ticketId: string): Promise<TicketComment
 export async function addTicketComment(
   ticketId: string,
   message: string,
-  createdByUid: string,
-  createdByEmail?: string | null
+  actorEmail: string
 ) {
   try {
     const trimmed = message.trim();
@@ -61,8 +60,7 @@ export async function addTicketComment(
 
     const commentRef = await addDoc(collection(db, "tickets", ticketId, "comments"), {
       message: trimmed,
-      created_by_uid: createdByUid,
-      created_by_email: createdByEmail || "",
+      created_by_email: actorEmail,
       created_at: serverTimestamp(),
     });
 
@@ -70,7 +68,7 @@ export async function addTicketComment(
     const activityPayload = {
       last_update_hint: "new comment added",
       updated_at: serverTimestamp(),
-      updated_by_uid: createdByUid,
+      updated_by_email: actorEmail,
     };
 
     try {
@@ -80,12 +78,12 @@ export async function addTicketComment(
       // Backward compatibility for older Firestore rules that do not allow last_update_hint yet.
       await updateDoc(doc(db, "tickets", ticketId), {
         updated_at: serverTimestamp(),
-        updated_by_uid: createdByUid,
+        updated_by_email: actorEmail,
       });
     }
 
     await logAuditEntry({
-      uid: createdByUid,
+      actorEmail,
       action: "add_comment",
       ticketId,
       details: {
@@ -107,7 +105,7 @@ export async function addTicketComment(
 export async function deleteTicketComment(
   ticketId: string,
   commentId: string,
-  actorUid: string
+  actorEmail: string
 ) {
   try {
     await deleteDoc(doc(db, "tickets", ticketId, "comments", commentId));
@@ -116,7 +114,7 @@ export async function deleteTicketComment(
     const activityPayload = {
       last_update_hint: "a comment was removed",
       updated_at: serverTimestamp(),
-      updated_by_uid: actorUid,
+      updated_by_email: actorEmail,
     };
 
     try {
@@ -126,12 +124,12 @@ export async function deleteTicketComment(
       // Backward compatibility for older Firestore rules that do not allow last_update_hint yet.
       await updateDoc(doc(db, "tickets", ticketId), {
         updated_at: serverTimestamp(),
-        updated_by_uid: actorUid,
+        updated_by_email: actorEmail,
       });
     }
 
     await logAuditEntry({
-      uid: actorUid,
+      actorEmail,
       action: "delete_comment",
       ticketId,
       details: {

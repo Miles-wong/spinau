@@ -4,7 +4,7 @@ export type AppNotification = {
   id: string;
   type?: string;
   ticket_id?: string;
-  actor_uid?: string;
+  actor_email?: string;
   title?: string;
   body?: string;
   created_at?: unknown;
@@ -15,11 +15,11 @@ export type AppNotification = {
 };
 
 export function subscribeUserNotifications(
-  uid: string,
+  email: string,
   onChange: (notifications: AppNotification[]) => void,
   onError?: (error: unknown) => void
 ): () => void {
-  if (!uid) {
+  if (!email) {
     onChange([]);
     return () => {};
   }
@@ -55,16 +55,16 @@ export function subscribeUserNotifications(
   };
 }
 
-export async function markNotificationRead(uid: string, notificationId: string): Promise<void> {
-  if (!uid || !notificationId) return;
+export async function markNotificationRead(email: string, notificationId: string): Promise<void> {
+  if (!email || !notificationId) return;
 
   await callBackendAPI("/api/notifications/mark-read", "POST", {
     notification_ids: [notificationId],
   });
 }
 
-export async function markNotificationsRead(uid: string, notifications: AppNotification[]): Promise<void> {
-  if (!uid) return;
+export async function markNotificationsRead(email: string, notifications: AppNotification[]): Promise<void> {
+  if (!email) return;
 
   await callBackendAPI("/api/notifications/mark-read", "POST", {});
 }

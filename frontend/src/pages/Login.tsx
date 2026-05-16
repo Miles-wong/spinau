@@ -15,12 +15,12 @@ import {
   signInWithPopup,
   OAuthProvider,
 } from "firebase/auth";
-import { doc, setDoc, serverTimestamp } from "firebase/firestore";
-import { auth, db } from "../firebase";
+import { auth } from "../firebase";
 import logo from "../pictures/logo.png";
 import type { UserInfo } from "../types/auth";
 import { useToast } from "../components/toastContext";
 import { trackUxEvent } from "../services/uxTelemetry";
+import { ensureUserProfile } from "../services/AuthService";
 
 type LoginUser = UserInfo & {
   provider?: string;
@@ -94,6 +94,10 @@ export default function Login({ onLoginSuccess }: LoginProps) {
     try {
       const userCredential = await signInWithEmailAndPassword(auth, emailTrimmed, passwordTrimmed);
       const user = userCredential.user;
+      await ensureUserProfile({
+        displayName: user.displayName || user.email?.split("@")[0] || "",
+        provider: "password",
+      });
 
       onLoginSuccess?.({
         email: user.email,
@@ -163,14 +167,9 @@ export default function Login({ onLoginSuccess }: LoginProps) {
       const userCredential = await createUserWithEmailAndPassword(auth, emailTrimmed, passwordTrimmed);
       const user = userCredential.user;
 
-      await setDoc(doc(db, "users", user.uid), {
-        uid: user.uid,
-        role: "reporter",
-        display_name: user.email?.split("@")[0] || "",
-        email: user.email ?? "",
-        is_active: true,
-        created_at: serverTimestamp(),
-        updated_at: serverTimestamp(),
+      await ensureUserProfile({
+        displayName: user.email?.split("@")[0] || "",
+        provider: "password",
       });
 
       onLoginSuccess?.({
@@ -232,6 +231,10 @@ export default function Login({ onLoginSuccess }: LoginProps) {
 
       const result = await signInWithPopup(auth, provider);
       const user = result.user;
+      await ensureUserProfile({
+        displayName: user.displayName || user.email?.split("@")[0] || "User",
+        provider: "microsoft.com",
+      });
 
       onLoginSuccess?.({
         email: user.email,

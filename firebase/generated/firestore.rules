@@ -5,34 +5,42 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function userDoc(uid) {
-      return get(/databases/$(database)/documents/users/$(uid));
+    function userDoc(email) {
+      return get(/databases/$(database)/documents/users/$(email));
+    }
+
+    function userDocExists(email) {
+      return exists(/databases/$(database)/documents/users/$(email));
+    }
+
+    function authEmail() {
+      return request.auth.token.email != null ? request.auth.token.email : "";
+    }
+
+    function isSelfUserDoc(userData) {
+      return signedIn() && (
+        userData.email == authEmail()
+      );
     }
 
     function role() {
-      return signedIn() ? userDoc(request.auth.uid).data.role : null;
+      return signedIn() && authEmail() != "" && userDocExists(authEmail())
+        ? userDoc(authEmail()).data.role
+        : null;
     }
 
     function isAdmin() {
       return signedIn() && role() == "admin";
     }
 
-    function ownerUid(resourceData) {
-      return resourceData.created_by_uid != null
-        ? resourceData.created_by_uid
-        : (
-          resourceData.created_by != null
-            ? resourceData.created_by
-            : (
-              resourceData.createdByUid != null
-                ? resourceData.createdByUid
-                : null
-            )
-        );
+    function ownerEmail(resourceData) {
+      return resourceData.created_by_email != null
+        ? resourceData.created_by_email
+        : null;
     }
 
     function isOwner(resourceData) {
-      return signedIn() && ownerUid(resourceData) == request.auth.uid;
+      return signedIn() && ownerEmail(resourceData) == authEmail();
     }
 
     function getTicketData(ticketId) {
@@ -56,7 +64,7 @@ service cloud.firestore {
 
       return changed.hasOnly([
         'updated_at',
-        'updated_by_uid',
+        'updated_by_email',
         'last_update_hint',
         'description',
         'noticed_time',
@@ -82,7 +90,7 @@ service cloud.firestore {
         'phone_number',
         'contact_email'
       ]) &&
-      request.resource.data.updated_by_uid == request.auth.uid &&
+      request.resource.data.updated_by_email == authEmail() &&
       (!changed.hasAny(['description']) || (isMissingFieldValue(resource.data.description) && isNonEmptyFieldValue(request.resource.data.description))) &&
       (!changed.hasAny(['noticed_time']) || (isMissingFieldValue(resource.data.noticed_time) && isNonEmptyFieldValue(request.resource.data.noticed_time))) &&
       (!changed.hasAny(['category']) || (isMissingFieldValue(resource.data.category) && isNonEmptyFieldValue(request.resource.data.category))) &&
@@ -141,7 +149,7 @@ service cloud.firestore {
 
       return changed.hasOnly([
         'updated_at',
-        'updated_by_uid',
+        'updated_by_email',
         'last_update_hint',
         'description',
         'noticed_time',
@@ -167,18 +175,18 @@ service cloud.firestore {
         'phone_number',
         'contact_email'
       ]) &&
-      request.resource.data.updated_by_uid == request.auth.uid;
+      request.resource.data.updated_by_email == authEmail();
     }
 
-    match /users/{uid} {
-      allow read: if signedIn() && (uid == request.auth.uid || isAdmin());
+    match /users/{email} {
+      allow read: if signedIn() && (email == authEmail() || isSelfUserDoc(resource.data) || isAdmin());
       allow write: if false;
 
       match /notifications/{notificationId} {
-        allow read: if signedIn() && uid == request.auth.uid;
+        allow read: if signedIn() && email == authEmail();
         allow create, delete: if false;
         allow update: if signedIn() &&
-          uid == request.auth.uid &&
+          email == authEmail() &&
           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read_at']);
       }
     }
@@ -188,25 +196,25 @@ service cloud.firestore {
     }
 
     match /tickets/{ticketId} {
-      allow create: if signedIn() && request.resource.data.created_by_uid == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.created_by_email == authEmail();
       allow get, list: if isAdmin() || (signedIn() && isOwner(resource.data));
 
       allow update: if (
         isAdmin() &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           'updated_at',
-          'updated_by_uid',
+          'updated_by_email',
           'last_update_hint',
           'issue_type',
           'status',
-          'assigned_to_uid',
+          'assigned_to_email',
           'assigned_to_name',
           'category',
           'severity',
           'closure_summary',
           'lessons_learned',
           'closed_at',
-          'closed_by_uid',
+          'closed_by_email',
           'duplicate_of_ticket_id',
           'related_ticket_ids'
         ])
@@ -224,14 +232,14 @@ service cloud.firestore {
         allow delete: if isAdmin() || (
           subCollection == "comments" &&
           signedIn() &&
-          resource.data.created_by_uid == request.auth.uid
+          resource.data.created_by_email == authEmail()
         );
       }
     }
 
     match /audit_logs/{logId} {
       allow get, list: if isAdmin();
-      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.actor_email == authEmail();
       allow update, delete: if false;
     }
 

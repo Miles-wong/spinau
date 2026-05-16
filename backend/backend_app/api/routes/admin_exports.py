@@ -32,8 +32,8 @@ BASE_EXPORT_FIELDS = [
     "category_other_text",
     "severity",
     "status",
-    "created_by_uid",
-    "assigned_to_uid",
+    "created_by_email",
+    "assigned_to_email",
     "created_at",
     "updated_at",
     "noticed_time",
@@ -60,11 +60,11 @@ BASE_EXPORT_FIELDS = [
 ]
 
 INTERNAL_EXPORT_FIELDS = [
-    "updated_by_uid",
+    "updated_by_email",
     "closure_summary",
     "lessons_learned",
     "closed_at",
-    "closed_by_uid",
+    "closed_by_email",
     "duplicate_of_ticket_id",
     "related_ticket_ids",
     "last_update_hint",
@@ -117,9 +117,9 @@ def _to_csv_scalar(value: Any) -> str:
 @require_auth
 def export_all_tickets_csv():
     """Export all tickets to CSV (admin-only)."""
-    uid = g.uid
+    email = g.email
 
-    role = get_user_role(uid)
+    role = get_user_role(email)
     if role != "admin":
         return jsonify({"error": "Permission denied"}), 403
 
@@ -168,7 +168,7 @@ def export_all_tickets_csv():
                     exported_count += 1
 
                 log_action(
-                    uid=uid,
+                    actor_email=email,
                     action="admin_export_tickets",
                     resource_type="ticket",
                     resource_id="all",
@@ -184,10 +184,10 @@ def export_all_tickets_csv():
                 )
             except Exception as stream_exc:
                 logger.error(
-                    "admin full export stream failed", uid=uid, exc_info=stream_exc
+                    "admin full export stream failed", email=email, exc_info=stream_exc
                 )
                 log_action(
-                    uid=uid,
+                    actor_email=email,
                     action="admin_export_tickets",
                     resource_type="ticket",
                     resource_id="all",
@@ -218,9 +218,9 @@ def export_all_tickets_csv():
         )
 
     except Exception as exc:
-        logger.error("admin full export failed", uid=uid, exc_info=exc)
+        logger.error("admin full export failed", email=email, exc_info=exc)
         log_action(
-            uid=uid,
+            actor_email=email,
             action="admin_export_tickets",
             resource_type="ticket",
             resource_id="all",

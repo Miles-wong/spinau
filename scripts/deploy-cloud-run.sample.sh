@@ -9,6 +9,9 @@ REPO="cyber-backend"
 IMAGE_NAME="cyber-incident-api"
 SERVICE="${IMAGE_NAME}"
 FRONTEND_ORIGIN_HTTPS="https://YOUR_PROJECT.web.app"
+# Same model ID as backend/.env (required at container startup).
+MODEL_NAME="gpt-4o-mini"
+MODEL_PROVIDER="${MODEL_PROVIDER:-openai}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -38,7 +41,7 @@ gcloud run deploy "${SERVICE}" \
   --min-instances=0 \
   --max-instances=10 \
   --timeout=300 \
-  --set-env-vars="FIREBASE_PROJECT_ID=${PROJECT_ID},ALLOWED_ORIGINS=${FRONTEND_ORIGIN_HTTPS}" \
+  --set-env-vars="FIREBASE_PROJECT_ID=${PROJECT_ID},ALLOWED_ORIGINS=${FRONTEND_ORIGIN_HTTPS},MODEL_PROVIDER=${MODEL_PROVIDER},MODEL_NAME=${MODEL_NAME}" \
   --set-secrets="OPENAI_API_KEY=openai-api-key:latest"
 
 echo "Done. Set frontend VITE_API_URL to the Cloud Run URL (https://...run.app) and run:"

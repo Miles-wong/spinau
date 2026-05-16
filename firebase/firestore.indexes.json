@@ -5,7 +5,7 @@
       "queryScope": "COLLECTION",
       "fields": [
         {
-          "fieldPath": "created_by_uid",
+          "fieldPath": "created_by_email",
           "order": "ASCENDING"
         },
         {
@@ -47,7 +47,7 @@
       "queryScope": "COLLECTION",
       "fields": [
         {
-          "fieldPath": "uid",
+          "fieldPath": "actor_email",
           "order": "ASCENDING"
         },
         {

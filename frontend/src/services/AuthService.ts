@@ -1,19 +1,34 @@
 import { fetchDocument } from "./FirestoreUtils";
-import { db } from "../firebase";
+import { auth, db } from "../firebase";
 import { collection, getDocs, limit, query, where } from "firebase/firestore";
+import { onAuthStateChanged, type User } from "firebase/auth";
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
 
 export async function getAuthToken(): Promise<string> {
   try {
-    const { auth } = await import("../firebase");
-    const user = auth.currentUser;
+    const user = auth.currentUser || (await waitForAuthUser(2500));
     if (!user) throw new Error("User not authenticated");
     return await user.getIdToken();
   } catch (error) {
     console.error("Error getting auth token:", error);
     throw new Error("Authentication failed");
   }
+}
+
+function waitForAuthUser(timeoutMs: number): Promise<User | null> {
+  return new Promise((resolve) => {
+    let unsubscribe = () => {};
+    const timer = window.setTimeout(() => {
+      unsubscribe();
+      resolve(auth.currentUser);
+    }, timeoutMs);
+    unsubscribe = onAuthStateChanged(auth, (user) => {
+      window.clearTimeout(timer);
+      unsubscribe();
+      resolve(user);
+    });
+  });
 }
 
 export async function callBackendAPI<T>(
@@ -51,9 +66,20 @@ export async function callBackendAPI<T>(
   return data as T;
 }
 
-export async function getUserRole(uid: string): Promise<string> {
+export async function ensureUserProfile(params?: {
+  displayName?: string;
+  provider?: string;
+}): Promise<{ ok: boolean; email: string; role?: string }> {
+  return callBackendAPI("/api/users/ensure-profile", "POST", {
+    display_name: params?.displayName || "",
+    provider: params?.provider || "",
+  });
+}
+
+export async function getUserRole(email: string): Promise<string> {
   try {
-    const data = await fetchDocument("users", uid);
+    const normalizedEmail = String(email || "").trim().toLowerCase();
+    const data = await fetchDocument("users", normalizedEmail);
     const role = (data as { role?: string })?.role;
     return role || "";
   } catch (error) {
@@ -62,50 +88,39 @@ export async function getUserRole(uid: string): Promise<string> {
   }
 }
 
-// Module-level cache so repeated pages don't re-fetch the same UIDs
 const _userLabelCache = new Map<string, string>();
 
-/**
- * Resolve a single UID to a human-readable label (display_name > email > uid).
- * Silently falls back to the raw uid on any fetch error.
- */
-export async function resolveUserLabel(uid: string): Promise<string> {
-  if (!uid) return "-";
-  if (_userLabelCache.has(uid)) return _userLabelCache.get(uid)!;
+export async function resolveUserLabel(email: string): Promise<string> {
+  if (!email) return "-";
+  if (_userLabelCache.has(email)) return _userLabelCache.get(email)!;
   try {
-    const data = (await fetchDocument("users", uid)) as Record<string, unknown>;
-    const label = String(data?.display_name || data?.email || uid);
-    _userLabelCache.set(uid, label);
+    const normalizedEmail = String(email).trim().toLowerCase();
+    const data = (await fetchDocument("users", normalizedEmail)) as Record<string, unknown>;
+    const label = String(data?.display_name || data?.email || normalizedEmail);
+    _userLabelCache.set(email, label);
     return label;
   } catch {
-    _userLabelCache.set(uid, uid);
-    return uid;
+    _userLabelCache.set(email, email);
+    return email;
   }
 }
 
-/**
- * Resolve an array of UIDs in parallel, returning a uid→label map.
- */
-export async function resolveUserLabels(uids: string[]): Promise<Record<string, string>> {
-  // Collapse duplicates first to avoid repeated Firestore reads for the same account.
-  const unique = [...new Set(uids.filter(Boolean))];
-  const results = await Promise.allSettled(unique.map((uid) => resolveUserLabel(uid)));
+export async function resolveUserLabels(emails: string[]): Promise<Record<string, string>> {
+  const unique = [...new Set(emails.filter(Boolean))];
+  const results = await Promise.allSettled(unique.map((email) => resolveUserLabel(email)));
   const out: Record<string, string> = {};
-  unique.forEach((uid, i) => {
+  unique.forEach((email, i) => {
     const r = results[i];
-    out[uid] = r.status === "fulfilled" ? r.value : uid;
+    out[email] = r.status === "fulfilled" ? r.value : email;
   });
   return out;
 }
 
 export type UserRoleOption = {
-  uid: string;
+  email: string;
   label: string;
 };
 
-/**
- * Load users for a specific role from Firestore users collection.
- */
 export async function listUsersByRole(role: string, pageSize: number = 200): Promise<UserRoleOption[]> {
   const q = query(collection(db, "users"), where("role", "==", role), limit(pageSize));
   const snapshot = await getDocs(q);
@@ -113,9 +128,9 @@ export async function listUsersByRole(role: string, pageSize: number = 200): Pro
   return snapshot.docs
     .map((docSnap) => {
       const data = docSnap.data() as Record<string, unknown>;
-      const uid = docSnap.id;
-      const label = String(data.display_name || data.email || uid);
-      return { uid, label };
+      const email = String(data.email || docSnap.id).toLowerCase();
+      const label = String(data.display_name || email);
+      return { email, label };
     })
     .sort((a, b) => a.label.localeCompare(b.label));
 }

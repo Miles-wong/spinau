@@ -97,12 +97,12 @@ export default function AdminDashboardPage({ user, role, onLogout }: AdminDashbo
       const nextRows = response.rows as TicketRow[];
       setRows(nextRows);
 
-      const uidSet = new Set<string>();
+      const emailSet = new Set<string>();
       nextRows.forEach((r) => {
-        if (r.created_by_uid) uidSet.add(r.created_by_uid);
-        if (r.assigned_to_uid) uidSet.add(r.assigned_to_uid);
+        if (r.created_by_email) emailSet.add(r.created_by_email);
+        if (r.assigned_to_email) emailSet.add(r.assigned_to_email);
       });
-      const labels = await resolveUserLabels([...uidSet]);
+      const labels = await resolveUserLabels([...emailSet]);
       setUserLabels(labels);
     } catch (e) {
       const message = toUserFacingMessage(e, {
@@ -209,7 +209,7 @@ export default function AdminDashboardPage({ user, role, onLogout }: AdminDashbo
 
   const unassignedTickets = useMemo(() =>
     [...rows]
-      .filter((row) => !String(row.assigned_to_uid || "").trim())
+      .filter((row) => !String(row.assigned_to_email || "").trim())
       .sort((a, b) => {
         const severityRank: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
         const severityDelta =
@@ -344,7 +344,7 @@ export default function AdminDashboardPage({ user, role, onLogout }: AdminDashbo
                           {statusBadge(row.status)}
                         </div>
                         <div className="mt-2 text-sm text-slate-600">{fmt(row.category)}</div>
-                        <div className="mt-1 text-xs text-slate-500">{userLabels[row.created_by_uid] || "Reporter"}</div>
+                        <div className="mt-1 text-xs text-slate-500">{userLabels[row.created_by_email] || "Reporter"}</div>
                         <div className="mt-1 text-xs text-slate-400">{row.created_at}</div>
                       </button>
                       <button
@@ -479,7 +479,7 @@ export default function AdminDashboardPage({ user, role, onLogout }: AdminDashbo
                         <td className="px-4 py-3">{statusBadge(row.status)}</td>
                         <td className="px-4 py-3">{severityBadge(row.severity)}</td>
                         <td className="px-4 py-3 text-slate-600">{fmt(row.category)}</td>
-                        <td className="px-4 py-3 text-slate-600">{userLabels[row.created_by_uid] || "—"}</td>
+                        <td className="px-4 py-3 text-slate-600">{userLabels[row.created_by_email] || "—"}</td>
                         <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{row.created_at}</td>
                       </tr>
                     ))}

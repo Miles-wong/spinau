@@ -3,7 +3,7 @@
  *
  * Renders the top navigation bar with:
  * - Role-sensitive menu items (admin vs reporter).
- * - Durable notification badges backed by users/{uid}/notifications.
+ * - Durable notification badges backed by users/{email}/notifications.
  * - Logout button.
  */
 import { useNavigate, useLocation } from "react-router-dom";
@@ -73,14 +73,14 @@ export default function Layout({ user, role, onLogout, children }: LayoutProps) 
   const [notificationMenuPath, setNotificationMenuPath] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!user.uid) {
+    if (!user.email) {
       setRecentNotifications([]);
       setUnreadNotifications([]);
       return;
     }
 
     const unsubscribe = subscribeUserNotifications(
-      user.uid,
+      user.email,
       (items) => {
         setRecentNotifications(items);
         setUnreadNotifications(items.filter((item) => !item.read_at));
@@ -88,7 +88,7 @@ export default function Layout({ user, role, onLogout, children }: LayoutProps) 
     );
 
     return unsubscribe;
-  }, [user.uid]);
+  }, [user.email]);
 
   const showNotificationMenu = notificationMenuPath === location.pathname;
   const visibleUnreadCount = unreadNotifications.length;
@@ -132,7 +132,7 @@ export default function Layout({ user, role, onLogout, children }: LayoutProps) 
       return;
     }
 
-    void markNotificationRead(user.uid, notification.id).catch(() => {
+    void markNotificationRead(user.email || "", notification.id).catch(() => {
       // Reading state is useful, but navigation should not be blocked by it.
     });
 
@@ -151,7 +151,7 @@ export default function Layout({ user, role, onLogout, children }: LayoutProps) 
   };
 
   const markVisibleNotificationsRead = () => {
-    void markNotificationsRead(user.uid, recentNotifications)
+    void markNotificationsRead(user.email || "", recentNotifications)
       .then(() => {
         const readAt = new Date().toISOString();
         setRecentNotifications((items) => items.map((item) => ({ ...item, read_at: item.read_at || readAt })));

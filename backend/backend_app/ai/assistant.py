@@ -11,6 +11,7 @@ Responsibilities
 """
 
 import json
+import os
 import time
 from typing import Any, Dict, Generator, List, Optional
 
@@ -39,6 +40,11 @@ ASSISTANT_SYSTEM_RULES = (
 
 
 def choose_next_field(collected: Dict[str, Any], missing: List[str]) -> Optional[str]:
+    """Return the highest-priority field still missing from the collected state.
+
+    The missing list is already sorted by compute_missing_fields; this simply
+    returns the first entry so callers stay explicit and easy to mock.
+    """
     if not missing:
         return None
     return missing[0]
@@ -61,12 +67,49 @@ _TEMPLATE_ONLY_FIELDS = frozenset({
     "severity",
 })
 
+_AI_REPLY_POLISH_MODE = os.environ.get("AI_REPLY_POLISH", "selective").strip().lower()
+_AI_POLISH_TEXT_FIELDS = frozenset({
+    "description",
+    "response_details",
+    "affected_asset",
+    "error_symptom",
+    "impact_scope",
+    "work_continuity",
+    "external_party_details",
+    "reported_to_details",
+    "location_detail",
+})
+
+
+def _build_template_reply(
+    *,
+    next_question: str,
+    expected_field: Optional[str],
+    patch: Dict[str, Any],
+    missing: List[str],
+) -> str:
+    """Return a warmer template reply without calling the model."""
+    if not next_question:
+        return "Thanks, I have noted that."
+
+    if expected_field and expected_field not in missing:
+        prefix = "Got it."
+    elif patch:
+        prefix = "That helps."
+    else:
+        prefix = "No problem."
+
+    if next_question.startswith(("Could", "What", "Who", "How", "When", "Where", "Is", "Has", "Did", "To route")):
+        return f"{prefix} {next_question}".strip()
+    return f"{prefix} {next_question}".strip()
+
 
 def _should_use_ai(
     expected_field: Optional[str],
     user_message: str,
     patch: Dict[str, Any],
     missing: List[str],
+    failed_attempts: int = 0,
 ) -> bool:
     """Return True only when an AI rewrite adds genuine value.
 
@@ -76,13 +119,26 @@ def _should_use_ai(
     - Something was actually extracted (so we have a value to acknowledge)
     - There are still fields to ask (no point calling AI just to say "done")
     """
+    polish_mode = _AI_REPLY_POLISH_MODE
+    if polish_mode in {"0", "false", "no", "off", "template"}:
+        return False
     if not missing:
         return False
     if expected_field in _TEMPLATE_ONLY_FIELDS:
         return False
+    if polish_mode == "full":
+        return True
+    if failed_attempts >= 1:
+        return True
     if len(user_message.strip()) < 10:
         return False
-    return True
+
+    # Selective mode: use AI only when it softens a genuinely complex moment.
+    # Ordinary short-answer turns stay template-only for speed and consistency.
+    if expected_field in _AI_POLISH_TEXT_FIELDS and patch and len(user_message.strip()) >= 40:
+        return True
+    captured_text_fields = set(patch).intersection(_AI_POLISH_TEXT_FIELDS)
+    return bool(captured_text_fields and len(user_message.strip()) >= 80)
 
 
 def build_fallback_assistant_message(
@@ -109,8 +165,13 @@ def build_fallback_assistant_message(
     next_field = choose_next_field(collected, missing)
     _, next_question, _ = get_next_question(collected, missing) if next_field else (None, "", {})
 
-    if not _should_use_ai(expected_field, user_message, patch, missing):
-        return f"Thank you. {next_question}".strip() if next_question else "Thank you for the information."
+    if not _should_use_ai(expected_field, user_message, patch, missing, failed_attempts):
+        return _build_template_reply(
+            next_question=next_question,
+            expected_field=expected_field,
+            patch=patch,
+            missing=missing,
+        )
 
     # --- Three-case scenario detection ---
     # Case 1: User answered the current expected field → move on
@@ -184,12 +245,17 @@ IMPORTANT: {'Your reply MUST end with this question (rephrase it naturally, do n
             ],
             temperature=0.4,
             max_tokens=200,
-            timeout=8.0,
+            timeout=4.0,
         )
         return response_text
     except Exception as exc:
         _ai_tracker.log_call("build_fallback_assistant_message (failed)", 0.0, f"error={str(exc)[:80]}")
-        return f"Thank you. {next_question}" if next_question else "Thank you for the information."
+        return _build_template_reply(
+            next_question=next_question,
+            expected_field=expected_field,
+            patch=patch,
+            missing=missing,
+        )
 
 
 def generate_assistant_message(
@@ -229,7 +295,7 @@ def stream_assistant_message(
 
     # Fast path: skip AI entirely for boolean/enum/short-answer fields.
     # These never benefit from AI rewording and skipping saves ~1-2s per turn.
-    if not _should_use_ai(expected_field, user_message, patch, missing):
+    if not _should_use_ai(expected_field, user_message, patch, missing, failed_attempts):
         reply = build_fallback_assistant_message(
             user_message, collected, missing, patch,
             expected_field=expected_field,
@@ -300,7 +366,7 @@ IMPORTANT: {'Your reply MUST end with this question (rephrase it naturally, do n
                 ],
                 temperature=0.4,
                 max_tokens=300,
-                timeout=15.0,
+                timeout=6.0,
             )
 
             safe_content = (content or "").strip()
@@ -335,7 +401,7 @@ IMPORTANT: {'Your reply MUST end with this question (rephrase it naturally, do n
             ],
             temperature=0.4,
             max_tokens=200,
-            timeout=8.0,
+            timeout=4.0,
         )
 
         chunk_count = 0

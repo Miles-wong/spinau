@@ -330,13 +330,20 @@ Typical production layout:
 - **Frontend**: build `frontend/` with production `VITE_API_URL` and `VITE_FIREBASE_*`, then deploy static files with Firebase Hosting (`firebase/firebase.json` includes a `hosting` target pointing at `../frontend/dist`).
 - **Backend**: containerized Flask + Gunicorn via [`backend/Dockerfile`](backend/Dockerfile); Cloud Run injects `PORT` (see [`get_api_port()`](backend/backend_app/core/config.py)).
 - **Firebase Admin**: either mount a service-account JSON (Secret Manager volume) and set `FIREBASE_SERVICE_ACCOUNT`, or leave that unset and use **Application Default Credentials** on Cloud Run with `FIREBASE_PROJECT_ID` set (see [`backend/backend_app/services/firebase_admin_utils.py`](backend/backend_app/services/firebase_admin_utils.py)).
+- **Cloud Run env** (often missing when copying only part of `.env`): set **`MODEL_NAME`** (required—the app imports [`backend/backend_app/ai/ai.py`](backend/backend_app/ai/ai.py) at startup) and **`MODEL_PROVIDER`**; configure your provider **`OPENAI_API_KEY`** / **`GEMINI_API_KEY`** / **`DEEPSEEK_API_KEY`** via secrets; set **`ALLOWED_ORIGINS`** to your Hosting HTTPS origin(s).
 
 Commands (after `gcloud` and `firebase` CLI login):
 
 ```bash
 # Backend image (from repo root; context is backend/)
 docker build -f backend/Dockerfile -t cyber-backend:local backend
-docker run --rm -e PORT=8080 -e FIREBASE_PROJECT_ID=your-project-id -p 8080:8080 cyber-backend:local
+docker run --rm \
+  -e PORT=8080 \
+  -e FIREBASE_PROJECT_ID=your-project-id \
+  -e MODEL_NAME=gpt-4o-mini \
+  -e MODEL_PROVIDER=openai \
+  -e OPENAI_API_KEY=your-key-here \
+  -p 8080:8080 cyber-backend:local
 curl -s http://127.0.0.1:8080/api/health
 ```
 

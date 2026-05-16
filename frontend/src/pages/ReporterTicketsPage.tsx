@@ -1,7 +1,7 @@
 /**
  * ReporterTicketsPage.tsx - Reporter's own ticket list with AG Grid.
  *
- * Shows only tickets created by the logged-in reporter (filtered by created_by_uid).
+ * Shows only tickets created by the logged-in reporter (filtered by created_by_email).
  * Clicking a row navigates to /tickets/:id for full details and comments.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -76,11 +76,11 @@ const CORE_EXPORT_COLUMN_IDS = [
 const fmt = (v: unknown) =>
   String(v ?? "")
     .replaceAll("_", " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase()) || "Unassigned";
+    .replace(/\b\w/g, (c) => c.toUpperCase());
 
 const formatDateTime = (value: unknown) => {
   const raw = String(value ?? "").trim();
-  if (!raw) return "Unassigned";
+  if (!raw) return "";
 
   const isoMatch = raw.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/);
   if (isoMatch) {
@@ -96,7 +96,7 @@ const formatDateTime = (value: unknown) => {
 
 const shortText = (value: unknown, maxLen: number = 100) => {
   const text = String(value ?? "").trim();
-  if (!text) return "Unassigned";
+  if (!text) return "";
   return text.length > maxLen ? `${text.slice(0, maxLen)}...` : text;
 };
 
@@ -107,7 +107,7 @@ const toEpochMs = (value: unknown): number | null => {
 
 const formatAge = (createdAt: unknown) => {
   const createdMs = toEpochMs(createdAt);
-  if (!createdMs) return "Unassigned";
+  if (!createdMs) return "";
 
   const diff = Math.max(0, Date.now() - createdMs);
   const totalHours = Math.floor(diff / 3600000);
@@ -123,7 +123,7 @@ const formatAge = (createdAt: unknown) => {
 const formatLocation = (row: TicketRow) => {
   const locationType = String(row.location_type ?? "").trim();
   const locationDetail = String(row.location_detail ?? "").trim();
-  if (!locationType && !locationDetail) return "Unassigned";
+  if (!locationType && !locationDetail) return "";
   if (!locationType) return locationDetail;
   if (!locationDetail) return fmt(locationType);
   return `${fmt(locationType)} - ${locationDetail}`;
@@ -159,7 +159,7 @@ function DetailPanel(props: ICellRendererParams<TicketRow>) {
   if (!row) return null;
 
   const descriptionText = String(row.description ?? "").trim();
-  const shortDescription = descriptionText || "Unassigned";
+  const shortDescription = descriptionText || "";
 
   return (
     <div
@@ -259,7 +259,7 @@ export default function ReporterTicketsPage({
 
       while (hasMore && collectedRows.length < MAX_FETCH_ROWS) {
         const response = await getTickets({
-          createdByUid: user.uid,
+          createdByEmail: (user.email || "").trim().toLowerCase(),
           pageSize: FETCH_BATCH_SIZE,
           cursor,
         });
@@ -297,7 +297,7 @@ export default function ReporterTicketsPage({
     } finally {
       setLoading(false);
     }
-  }, [user.uid, showToast]);
+  }, [user.email, showToast]);
 
   useEffect(() => {
     void loadTickets();
@@ -510,7 +510,7 @@ export default function ReporterTicketsPage({
         minWidth: 170,
         sortable: false,
         cellStyle: baseCellStyle,
-        valueGetter: ({ data }) => (data ? formatLocation(data) : "Unassigned"),
+        valueGetter: ({ data }) => (data ? formatLocation(data) : ""),
       },
       {
         field: "updated_at",

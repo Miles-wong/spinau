@@ -1,4 +1,4 @@
-import { auth } from "../firebase";
+import { getAuthToken } from "./AuthService";
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
 
@@ -9,13 +9,15 @@ export type WarmedConversation = {
   missing?: string[];
   is_complete?: boolean;
   next_hints?: Record<string, unknown>;
+  messages?: Array<{ role: string; content: string }>;
 };
 
 let warmupPromise: Promise<WarmedConversation> | null = null;
 let warmedConversation: WarmedConversation | null = null;
 
 async function requestConversationInit(): Promise<WarmedConversation> {
-  const idToken = await auth.currentUser?.getIdToken();
+  const storedConversationId = window.localStorage.getItem("activeConversationId") || "";
+  const idToken = await getAuthToken();
 
   const response = await fetch(`${API_BASE_URL}/api/conversation/init`, {
     method: "POST",
@@ -23,6 +25,9 @@ async function requestConversationInit(): Promise<WarmedConversation> {
       "Content-Type": "application/json",
       Authorization: `Bearer ${idToken}`,
     },
+    body: JSON.stringify(
+      storedConversationId ? { conversation_id: storedConversationId } : {}
+    ),
   });
 
   if (!response.ok) {

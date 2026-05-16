@@ -1,4 +1,5 @@
 import re
+import os
 import time
 from typing import Any, Dict, List, Optional
 
@@ -19,6 +20,159 @@ def _json_classifier_model() -> str:
     if MODEL_PROVIDER == "openai" and EXTRACTION_MODEL.startswith("gpt-5"):
         return "gpt-4o-mini"
     return EXTRACTION_MODEL
+
+
+AI_ISSUE_TYPE_CONFIDENCE_THRESHOLD = 0.75
+DEFAULT_STRONG_GEMINI_CLASSIFIER_MODEL = "gemini-2.5-pro"
+
+
+def _strong_classifier_model() -> str:
+    """Use a stronger model only for low-confidence AI/local conflicts."""
+    if MODEL_PROVIDER == "gemini":
+        return os.environ.get(
+            "STRONG_GEMINI_CLASSIFIER_MODEL",
+            DEFAULT_STRONG_GEMINI_CLASSIFIER_MODEL,
+        ).strip() or DEFAULT_STRONG_GEMINI_CLASSIFIER_MODEL
+    return EXTRACTION_MODEL
+
+
+DIRECT_ISSUE_TYPE_PROMPT = """Classify the user's message for an incident intake system.
+
+Return exactly one JSON object and no extra text:
+{"intent":"cyber|it_support","confidence":0.0,"reason":"short reason"}
+
+Definitions:
+- cyber: suspected cybersecurity, security incident, phishing, malware, ransomware, account compromise, unauthorized access, suspicious login, suspicious link/message, data exposure, wrong recipient involving sensitive/customer/company data, policy/security violation, or security-sensitive device loss.
+- it_support: ordinary IT help such as hardware replacement, screen/monitor/printer/keyboard/mouse issues, software install/crash, routine password reset, routine locked account, access request, Wi-Fi/VPN/network, email/Teams/app problems, workstation setup, or service outage without a security-risk framing.
+
+Important:
+- AI is the primary decision maker for cyber vs it_support.
+- You must choose either cyber or it_support. Do not return unclear.
+- Short but meaningful descriptions are valid.
+- If the user explicitly says they have a cyber incident to report, classify as cyber.
+- If the user only asks for general help without security evidence, classify as it_support.
+- Do not classify routine IT support as cyber just because it mentions account, access, email, dashboard, or security tools.
+- Do classify as cyber when routine IT words are combined with clear security-risk evidence such as suspicious links, unknown-country login alerts, unexpected MFA, fake sender, credentials entered into a linked page, malware, or data sent to the wrong recipient.
+
+Boundary examples:
+- "password reset" -> it_support
+- "password reset email I did not request" -> cyber
+- "I forgot my password" -> it_support
+- "account locked after weird MFA prompts" -> cyber
+- "VPN keeps disconnecting" -> it_support
+- "VPN issue after clicking unknown link" -> cyber
+- "I lost my work phone" -> cyber
+- "laptop screen cracked" -> it_support
+- "I have a cyber incident to report" -> cyber
+"""
+
+
+def _normalize_direct_issue_type(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"cyber", "cyber_incident", "security", "security_incident"}:
+        return "cyber"
+    if normalized in {"it", "it_support", "support", "technical_support"}:
+        return "it_support"
+    if normalized in {"unclear", "unknown", "ambiguous", "invalid", ""}:
+        return "unclear"
+    return "unclear"
+
+
+def _parse_confidence(value: Any) -> float:
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if confidence > 1.0:
+        confidence = confidence / 100.0
+    return max(0.0, min(1.0, confidence))
+
+
+def classify_issue_type_with_ai(description: str) -> Dict[str, Any]:
+    """Let the model make the primary cyber vs IT support decision."""
+    text = str(description or "").strip()
+    if not text:
+        return {"intent": "unclear", "confidence": 0.0, "reason": "empty description"}
+
+    req_start = time.time()
+    try:
+        payload, api_time, used_fallback = request_json_completion(
+            messages=[
+                {"role": "system", "content": DIRECT_ISSUE_TYPE_PROMPT},
+                {"role": "user", "content": text},
+            ],
+            model=_json_classifier_model(),
+            temperature=0.0,
+            top_p=1.0,
+            max_tokens=120,
+            timeout=6.0,
+            use_gemini_fallback=True,
+        )
+        result = {
+            "intent": _normalize_direct_issue_type(payload.get("intent")),
+            "confidence": _parse_confidence(payload.get("confidence")),
+            "reason": str(payload.get("reason", "")).strip()[:220],
+        }
+        _ai_tracker.log_call(
+            "classify_issue_type_with_ai",
+            time.time() - req_start,
+            (
+                f"model={MODEL_PROVIDER} fallback={used_fallback} "
+                f"intent={result['intent']} confidence={result['confidence']:.2f} "
+                f"api_time={api_time:.2f}s"
+            ),
+        )
+        return result
+    except Exception as exc:
+        _ai_tracker.log_call(
+            "classify_issue_type_with_ai (failed)",
+            time.time() - req_start,
+            f"error={str(exc)[:80]}",
+        )
+        return {"intent": "unclear", "confidence": 0.0, "reason": "AI issue-type classification failed"}
+
+
+def has_local_cyber_safety_evidence(text: str) -> bool:
+    """Second-opinion safety check used only when AI issue routing is uncertain."""
+    lowered = (text or "").lower()
+    return bool(
+        has_strong_data_disclosure_evidence(lowered)
+        or re.search(
+            r"\b("
+            r"cyber incident|security incident|phishing|malware|ransomware|"
+            r"suspicious email|suspicious message|strange email|fake email|"
+            r"unexpected mfa|mfa prompt|login alert|overseas login|another country|impossible travel|"
+            r"password reset (?:email )?(?:i )?(?:did not|didn't) request|unrequested password reset|"
+            r"clicked (?:an? )?(?:unknown|suspicious|fake) link|unknown link|suspicious link|"
+            r"fake sender|fake login|entered .*password.*email|credentials?.*(?:stolen|captured|compromised)|"
+            r"unauthorized access|accessed .*without permission|account .*hacked|account .*compromised|"
+            r"lost .*company laptop|lost .*work laptop|stolen .*company laptop|stolen .*work laptop|"
+            r"opened .*strange attachment|opened .*suspicious attachment|strange attachment|"
+            r"personal (?:gmail|dropbox|cloud|drive)|customer records?.*personal|"
+            r"shared mailbox sent .*we did not|forwarding rule"
+            r")\b",
+            lowered,
+        )
+    )
+
+
+def has_local_it_support_evidence(text: str) -> bool:
+    """Return True for concrete routine IT support evidence."""
+    lowered = (text or "").lower()
+    return bool(
+        re.search(
+            r"\b("
+            r"screen is broken|screen cracked|monitor|printer|keyboard|mouse|dock|docking station|"
+            r"move my computer|new office|set(?:ting)? up my computer|new workstation|"
+            r"forgot my password|normal password reset|typed the wrong password|"
+            r"need access to|access request|permission denied|"
+            r"vpn keeps disconnecting|wi-?fi|outlook.*crash|teams audio|"
+            r"laptop is very slow.*no security warnings|approved software installed|"
+            r"reporting dashboard is down|payroll system"
+            r")\b",
+            lowered,
+        )
+    )
 
 
 def extract_explicit_severity(text: str) -> Optional[str]:
@@ -296,6 +450,12 @@ def infer_issue_type_from_collected(
     if not observed_text:
         return None
 
+    # Strong domain phrase override: when users explicitly call it a cyber/security
+    # incident, keep routing in the cyber domain even if support-style verbs
+    # like "report" are present.
+    if re.search(r"\b(cyber|security)\s+incident\b", observed_text):
+        return "cyber"
+
     if has_strong_data_disclosure_evidence(observed_text):
         return "cyber"
 
@@ -427,22 +587,45 @@ def infer_severity_from_collected(collected: Dict[str, Any]) -> Optional[str]:
 
 
 def classify_report_with_ai(collected: Dict[str, Any]) -> Dict[str, Any]:
-    """Classify issue_type/category/severity using rules first, then AI when needed.
+    """Classify issue_type/category/severity with AI as the primary router.
 
-    Rules are treated as high-confidence shortcuts and guardrails. The model is
-    used for open-ended descriptions that rules do not classify specifically.
+    The model decides the top-level issue type first. Local rules are only used
+    as a second opinion when that decision is low-confidence, and as support for
+    category/severity after a high-confidence AI issue type has been locked.
     """
     description = str(collected.get("description", "")).strip()
-    if not _looks_like_meaningful_description(description):
-        return {}
+    direct_issue_type = classify_issue_type_with_ai(description)
+    direct_intent = str(direct_issue_type.get("intent", "")).strip().lower()
+    direct_confidence = _parse_confidence(direct_issue_type.get("confidence"))
+    ai_locked_issue_type = (
+        direct_intent
+        if direct_intent in {"cyber", "it_support"}
+        and direct_confidence >= AI_ISSUE_TYPE_CONFIDENCE_THRESHOLD
+        else ""
+    )
+
+    if not ai_locked_issue_type and not _looks_like_meaningful_description(description):
+        if direct_intent == "unclear":
+            return {
+                "issue_type": "it_support",
+                "category": "general_technical_support",
+                "confidence": "low",
+                "needs_confirmation": True,
+                "issue_type_source": "local_fallback",
+                "issue_type_confidence": direct_confidence,
+                "issue_type_reason": direct_issue_type.get("reason") or "Defaulted to IT support because no clear cyber evidence was found.",
+                "analysis": "Best fit: IT Support. Low confidence.",
+            }
 
     explicit_issue_type = str(collected.get("issue_type", "")).strip().lower()
     locked_issue_type = (
         explicit_issue_type if explicit_issue_type in {"cyber", "it_support"} else ""
     )
+    if ai_locked_issue_type:
+        locked_issue_type = ai_locked_issue_type
 
     observed_text = build_observed_text_from_collected(collected).lower()
-    if locked_issue_type == "it_support":
+    if locked_issue_type == "it_support" and not ai_locked_issue_type:
         has_strong_cyber_evidence = bool(
             re.search(
                 r"\b(mfa prompt|unexpected mfa|login alert|another country|unknown country|"
@@ -453,8 +636,50 @@ def classify_report_with_ai(collected: Dict[str, Any]) -> Dict[str, Any]:
         ) or has_strong_data_disclosure_evidence(observed_text)
         if has_strong_cyber_evidence:
             locked_issue_type = ""
+    if not locked_issue_type and not ai_locked_issue_type and has_local_cyber_safety_evidence(observed_text):
+        locked_issue_type = "cyber"
+    if (
+        not locked_issue_type
+        and not ai_locked_issue_type
+        and direct_intent == "unclear"
+        and not has_local_cyber_safety_evidence(observed_text)
+        and not has_local_it_support_evidence(observed_text)
+    ):
+        locked_issue_type = "it_support"
     rule_result = _classify_with_rules(collected, locked_issue_type=locked_issue_type)
-    if rule_result.get("confidence") == "high":
+    low_confidence_ai_intent = (
+        not ai_locked_issue_type
+        and direct_intent in {"cyber", "it_support"}
+        and direct_confidence < AI_ISSUE_TYPE_CONFIDENCE_THRESHOLD
+    )
+    local_issue_type = str(rule_result.get("issue_type", "")).strip().lower()
+    if low_confidence_ai_intent and local_issue_type in {"cyber", "it_support"}:
+        if direct_intent == local_issue_type:
+            result = _with_issue_type_metadata(
+                rule_result,
+                source="local_ai_agreement",
+                direct_issue_type=direct_issue_type,
+                direct_confidence=direct_confidence,
+            )
+            if not result.get("analysis"):
+                result["analysis"] = "Low-confidence AI and local rules agreed; kept the local triage result."
+            return result
+
+        result = _with_issue_type_metadata(
+            rule_result,
+            source="local_pending_strong_arbitration",
+            direct_issue_type=direct_issue_type,
+            direct_confidence=direct_confidence,
+        )
+        result["strong_arbitration_pending"] = True
+        result["strong_arbitration_kind"] = "issue_type_only"
+        result["strong_arbitration_ai_intent"] = direct_intent
+        result["strong_arbitration_local_issue_type"] = local_issue_type
+        if not result.get("analysis"):
+            result["analysis"] = "AI and local rules disagreed; kept the local triage result while stronger issue-type arbitration runs in the background."
+        return result
+
+    if not ai_locked_issue_type and rule_result.get("confidence") == "high":
         return rule_result
 
     heuristic_issue_type = (
@@ -514,7 +739,7 @@ def classify_report_with_ai(collected: Dict[str, Any]) -> Dict[str, Any]:
         for key, value in rule_result.items()
         if key in {"issue_type", "category", "severity"}
     }
-    prefer_ai_issue_type = _should_prefer_ai_issue_type(
+    prefer_ai_issue_type = bool(ai_locked_issue_type) or _should_prefer_ai_issue_type(
         locked_issue_type=locked_issue_type,
         heuristic_issue_type=heuristic_issue_type,
         heuristic=heuristic,
@@ -522,7 +747,8 @@ def classify_report_with_ai(collected: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     resolved_issue_type = (
-        locked_issue_type
+        ai_locked_issue_type
+        or locked_issue_type
         or (validated_ai.get("issue_type") if prefer_ai_issue_type else "")
         or heuristic.get("issue_type")
         or heuristic_issue_type
@@ -546,6 +772,7 @@ def classify_report_with_ai(collected: Dict[str, Any]) -> Dict[str, Any]:
         resolved_category=resolved_category,
         resolved_severity=resolved_severity,
         heuristic=heuristic,
+        preserve_issue_type=bool(ai_locked_issue_type),
     )
 
     if resolved_category == "phishing":
@@ -577,9 +804,13 @@ def classify_report_with_ai(collected: Dict[str, Any]) -> Dict[str, Any]:
         heuristic=heuristic,
         validated_ai=validated_ai,
     )
+    if ai_locked_issue_type:
+        confidence = "high" if direct_confidence >= 0.9 else "medium"
 
     if resolved_issue_type not in {"cyber", "it_support"}:
-        return {}
+        resolved_issue_type = "it_support"
+        if not resolved_category:
+            resolved_category = "general_technical_support"
 
     result: Dict[str, Any] = {
         "issue_type": resolved_issue_type,
@@ -590,6 +821,11 @@ def classify_report_with_ai(collected: Dict[str, Any]) -> Dict[str, Any]:
         result["category"] = resolved_category
     if resolved_severity:
         result["severity"] = resolved_severity
+    if direct_issue_type:
+        result["issue_type_source"] = "ai_primary" if ai_locked_issue_type else "local_fallback"
+        result["issue_type_confidence"] = direct_confidence
+        if direct_issue_type.get("reason"):
+            result["issue_type_reason"] = direct_issue_type.get("reason")
 
     analysis = _build_classification_analysis(
         resolved_issue_type=resolved_issue_type,
@@ -648,7 +884,230 @@ def _classify_with_rules(
     return result
 
 
+def _with_issue_type_metadata(
+    result: Dict[str, Any],
+    *,
+    source: str,
+    direct_issue_type: Dict[str, Any],
+    direct_confidence: float,
+) -> Dict[str, Any]:
+    """Attach issue-routing provenance to a classification result."""
+    enriched = dict(result)
+    enriched["needs_confirmation"] = True
+    enriched["issue_type_source"] = source
+    enriched["issue_type_confidence"] = direct_confidence
+    if direct_issue_type.get("reason"):
+        enriched["issue_type_reason"] = direct_issue_type.get("reason")
+    return enriched
+
+
+def _classify_conflict_with_strong_model(
+    *,
+    collected: Dict[str, Any],
+    direct_issue_type: Dict[str, Any],
+    local_result: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Resolve low-confidence AI/local conflicts with a stronger classifier.
+
+    The stronger model is only a tie-breaker. Its output still goes through the
+    same enum validation, domain boundary enforcement, and deterministic
+    guardrails as the normal classifier. If anything fails, callers fall back to
+    the local result.
+    """
+    factual_summary = _build_classification_summary(collected)
+    observed_text = build_observed_text_from_collected(collected)
+    direct_intent = str(direct_issue_type.get("intent", "")).strip().lower()
+    direct_reason = str(direct_issue_type.get("reason", "")).strip()
+
+    prompt = (
+        "Resolve this classification conflict for an incident intake system.\n\n"
+        "Return one JSON object only with this exact shape:\n"
+        "{"
+        '"issue_type":"cyber|it_support",'
+        '"category":"allowed_category",'
+        '"severity":"low|medium|high|critical",'
+        '"analysis":"short evidence-based explanation (max 220 chars)",'
+        '"winner":"ai|local|override"'
+        "}\n\n"
+        "Allowed taxonomy:\n"
+        f"- cyber categories: {' | '.join(get_categories_by_issue_type('cyber'))}\n"
+        f"- it_support categories: {' | '.join(get_categories_by_issue_type('it_support'))}\n"
+        "- severity: low | medium | high | critical\n\n"
+        "Decision rules:\n"
+        "- Prefer cyber only when there is security-risk evidence: suspicious link/message, compromise, unauthorized access, malware, data exposure, policy/security violation, or security-sensitive device loss.\n"
+        "- Prefer it_support for routine access, setup, outage, crash, malfunction, hardware, software, network, or service requests without security-risk evidence.\n"
+        "- Pick a category that belongs to the chosen issue_type.\n"
+        "- Do not copy either side blindly; use the incident facts as source of truth.\n\n"
+        "Low-confidence AI issue routing:\n"
+        f"- issue_type: {direct_intent or 'unclear'}\n"
+        f"- confidence: {_parse_confidence(direct_issue_type.get('confidence')):.2f}\n"
+        f"- reason: {direct_reason or 'not provided'}\n\n"
+        "Local rule result:\n"
+        f"- issue_type: {local_result.get('issue_type', '')}\n"
+        f"- category: {local_result.get('category', '')}\n"
+        f"- severity: {local_result.get('severity', '')}\n"
+        f"- confidence: {local_result.get('confidence', '')}\n\n"
+        "Incident facts:\n"
+        f"{factual_summary or observed_text}"
+    )
+
+    req_start = time.time()
+    try:
+        payload, api_time, used_fallback = request_json_completion(
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a senior incident triage adjudicator. "
+                        "Return one strict JSON object only."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            model=_strong_classifier_model(),
+            temperature=0.0,
+            top_p=1.0,
+            max_tokens=4096,
+            timeout=40.0,
+            use_gemini_fallback=False,
+        )
+        validated = _validate_ai_classification_payload(payload, locked_issue_type="")
+        if not validated:
+            return {}
+
+        heuristic = {
+            key: value
+            for key, value in local_result.items()
+            if key in {"issue_type", "category", "severity"}
+        }
+        issue_type, category, severity = _apply_classification_guardrails(
+            collected=collected,
+            resolved_issue_type=str(validated.get("issue_type", "")),
+            resolved_category=validated.get("category"),
+            resolved_severity=validated.get("severity"),
+            heuristic=heuristic,
+            preserve_issue_type=False,
+        )
+        if issue_type not in {"cyber", "it_support"}:
+            return {}
+
+        result: Dict[str, Any] = {
+            "issue_type": issue_type,
+            "confidence": "medium",
+            "needs_confirmation": True,
+        }
+        if category:
+            result["category"] = category
+        if severity:
+            result["severity"] = severity
+        if validated.get("analysis"):
+            result["analysis"] = validated["analysis"]
+        else:
+            result["analysis"] = "Resolved low-confidence AI/local disagreement with stronger-model arbitration."
+
+        _ai_tracker.log_call(
+            "classify_conflict_with_strong_model",
+            time.time() - req_start,
+            (
+                f"model={_strong_classifier_model()} fallback={used_fallback} "
+                f"issue_type={issue_type} category={category or ''} api_time={api_time:.2f}s"
+            ),
+        )
+        return result
+    except Exception as exc:
+        _ai_tracker.log_call(
+            "classify_conflict_with_strong_model (failed)",
+            time.time() - req_start,
+            f"model={_strong_classifier_model()} error={str(exc)[:80]}",
+        )
+        return {}
+
+
+def classify_issue_type_conflict_with_strong_model(
+    *,
+    collected: Dict[str, Any],
+    direct_issue_type: Dict[str, Any],
+    local_issue_type: str,
+) -> Dict[str, Any]:
+    """Resolve only cyber vs it_support with the stronger Gemini model.
+
+    This is intentionally smaller than the full classifier so it can run in the
+    background without deciding category/severity or blocking the user turn.
+    """
+    observed_text = build_observed_text_from_collected(collected)
+    direct_intent = str(direct_issue_type.get("intent", "")).strip().lower()
+    direct_reason = str(direct_issue_type.get("reason", "")).strip()
+    normalized_local = str(local_issue_type or "").strip().lower()
+
+    prompt = (
+        "Resolve only the top-level issue type for this incident intake conflict.\n\n"
+        "Return one JSON object only:\n"
+        '{"issue_type":"cyber|it_support","analysis":"short evidence-based reason max 180 chars"}\n\n'
+        "Definitions:\n"
+        "- cyber: security risk, suspicious activity, compromise, unauthorized access, malware, phishing, data exposure, policy/security violation, or security-sensitive device loss.\n"
+        "- it_support: routine access help, setup, outage, crash, malfunction, performance, hardware, software, network, communication, or service request without security-risk evidence.\n\n"
+        "Low-confidence fast AI result:\n"
+        f"- issue_type: {direct_intent or 'unclear'}\n"
+        f"- confidence: {_parse_confidence(direct_issue_type.get('confidence')):.2f}\n"
+        f"- reason: {direct_reason or 'not provided'}\n\n"
+        "Local rule result:\n"
+        f"- issue_type: {normalized_local or 'unclear'}\n\n"
+        "Incident facts:\n"
+        f"{observed_text}"
+    )
+
+    req_start = time.time()
+    try:
+        payload, api_time, used_fallback = request_json_completion(
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a senior incident triage adjudicator. "
+                        "Return one strict JSON object only."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            model=_strong_classifier_model(),
+            temperature=0.0,
+            top_p=1.0,
+            max_tokens=2048,
+            timeout=30.0,
+            use_gemini_fallback=False,
+        )
+        issue_type = str(payload.get("issue_type", "")).strip().lower()
+        if issue_type not in {"cyber", "it_support"}:
+            return {}
+
+        result = {
+            "issue_type": issue_type,
+            "analysis": str(payload.get("analysis", "")).strip()[:180],
+        }
+        _ai_tracker.log_call(
+            "classify_issue_type_conflict_with_strong_model",
+            time.time() - req_start,
+            (
+                f"model={_strong_classifier_model()} fallback={used_fallback} "
+                f"issue_type={issue_type} api_time={api_time:.2f}s"
+            ),
+        )
+        return result
+    except Exception as exc:
+        _ai_tracker.log_call(
+            "classify_issue_type_conflict_with_strong_model (failed)",
+            time.time() - req_start,
+            f"model={_strong_classifier_model()} error={str(exc)[:80]}",
+        )
+        return {}
+
+
 def _has_explicit_other_context(observed_text: str, issue_type: str) -> bool:
+    """Return True when observed text contains strong signals that justify an 'other' category.
+
+    Prevents every ambiguous description from defaulting to 'other' by requiring
+    at least one explicit contextual keyword that confirms the label is intentional.
+    """
     if issue_type == "cyber":
         return bool(
             re.search(
@@ -673,6 +1132,7 @@ def _apply_classification_guardrails(
     resolved_category: Optional[str],
     resolved_severity: Optional[str],
     heuristic: Dict[str, str],
+    preserve_issue_type: bool = False,
 ) -> tuple[str, Optional[str], Optional[str]]:
     """Apply deterministic safety constraints after AI or rule classification."""
     observed_text = build_observed_text_from_collected(collected).lower()
@@ -680,7 +1140,7 @@ def _apply_classification_guardrails(
     severity = str(resolved_severity or "").strip().lower() or None
     issue_type = str(resolved_issue_type or "").strip().lower()
 
-    if has_strong_data_disclosure_evidence(observed_text):
+    if not preserve_issue_type and has_strong_data_disclosure_evidence(observed_text):
         issue_type = "cyber"
         category = "data_breach"
 
@@ -733,6 +1193,11 @@ def derive_recommendations_from_collected(collected: Dict[str, Any]) -> Dict[str
 
 
 def _build_classification_summary(collected: Dict[str, Any]) -> str:
+    """Serialize collected incident fields into a human-readable summary for the classification prompt.
+
+    Only includes fields with non-empty values; boolean flags and list values
+    are rendered to plain text so the LLM does not need to parse raw Python types.
+    """
     fields = [
         ("description", "Description"),
         ("noticed_time", "When noticed"),
@@ -769,6 +1234,12 @@ def _validate_ai_classification_payload(
     payload: Dict[str, Any],
     locked_issue_type: str,
 ) -> Dict[str, Any]:
+    """Validate and sanitize a raw JSON payload returned by the classification model.
+
+    Ensures the response contains a known issue_type, a category that belongs to
+    that domain, and a recognised severity level.  Returns an empty dict when the
+    issue_type is absent or unrecognised so callers can fall back to heuristics.
+    """
     validated: Dict[str, Any] = {}
 
     issue_type = str(payload.get("issue_type", "")).strip().lower()
@@ -804,6 +1275,15 @@ def _estimate_classification_confidence(
     heuristic: Dict[str, str],
     validated_ai: Dict[str, Any],
 ) -> str:
+    """Estimate classification confidence as 'high', 'medium', or 'low'.
+
+    Scoring factors:
+    - Description length (longer narratives carry more signal).
+    - Number of supporting factual fields already collected.
+    - Agreement between AI output and deterministic heuristics.
+
+    Returns 'high' for score >= 6, 'medium' for >= 4, otherwise 'low'.
+    """
     score = 0
     description = str(collected.get("description", "")).strip()
     if len(description) >= 160:
@@ -850,6 +1330,11 @@ def _build_classification_analysis(
     heuristic: Dict[str, str],
     validated_ai: Dict[str, Any],
 ) -> str:
+    """Build a short human-readable analysis string to surface in the confirmation prompt.
+
+    Prefers the model's own analysis text when available; falls back to a
+    structured sentence built from the resolved fields and confidence level.
+    """
     model_analysis = str(validated_ai.get("analysis", "")).strip()
     if model_analysis:
         return model_analysis
@@ -874,6 +1359,14 @@ def _should_prefer_ai_issue_type(
     heuristic: Dict[str, str],
     validated_ai: Dict[str, Any],
 ) -> bool:
+    """Decide whether the AI's issue_type should override the heuristic result.
+
+    Returns True only when:
+    - No issue type is externally locked.
+    - The AI resolved 'cyber' with a specific (non-'other') category.
+    - The heuristic produced a weak IT-support default with no category or severity.
+    - The AI's category is security-specific or the severity is high/critical.
+    """
     if locked_issue_type:
         return False
 
@@ -910,6 +1403,12 @@ def _should_prefer_ai_issue_type(
 
 
 def _looks_like_meaningful_description(text: str) -> bool:
+    """Return True when a text fragment is substantial enough to classify.
+
+    Rejects single-word answers, common filler phrases, and texts below
+    the minimum description length so the classifier is never called on
+    noise-only input.
+    """
     stripped = (text or "").strip()
     normalized = _normalize_text(stripped)
 
@@ -957,11 +1456,20 @@ def _looks_like_meaningful_description(text: str) -> bool:
 def _infer_category_from_text(
     text: str, issue_type: Optional[str] = None
 ) -> Optional[str]:
+    """Infer an incident category from free text using ordered regex rules.
+
+    Matches are evaluated from most specific to most generic so that a
+    description containing both malware and phishing signals resolves to
+    the more concrete category.  Returns None when no rule fires.
+    """
     lowered = text.lower()
 
     normalized_issue_type = str(issue_type or "").strip().lower()
     allow_cyber = normalized_issue_type in {"", "cyber", "not_sure"}
     allow_it_support = normalized_issue_type in {"", "it_support", "not_sure"}
+
+    if allow_cyber and re.search(r"\b(cyber|security)\s+incident\b", lowered):
+        return "suspicious_activity"
 
     if allow_cyber and re.search(
         r"\b(malware|virus|trojan|worm|ransomware|popup|pop-up|antivirus|infected)\b",
@@ -1130,6 +1638,12 @@ def _infer_category_from_text(
 
 
 def _infer_severity_from_text(text: str, category: Optional[str]) -> Optional[str]:
+    """Infer a severity level from free text and the resolved category.
+
+    Uses conservative heuristics: errs toward 'medium' for ambiguous signals
+    and requires concrete multi-user or data-exposure evidence before returning
+    'high' or 'critical'.
+    """
     lowered = text.lower()
     data_involved_flag = _extract_data_involved_flag(text)
 
@@ -1221,6 +1735,11 @@ def _infer_severity_from_text(text: str, category: Optional[str]) -> Optional[st
 
 
 def _extract_data_involved_flag(text: str) -> Optional[bool]:
+    """Detect whether sensitive data was involved, based on explicit text signals.
+
+    Returns True for clear affirmative mentions, False for explicit negations,
+    and None when the text is ambiguous or the reporter is uncertain.
+    """
     lowered = text.lower()
 
     if re.search(
@@ -1243,4 +1762,5 @@ def _extract_data_involved_flag(text: str) -> Optional[bool]:
 
 
 def _normalize_text(text: str) -> str:
+    """Collapse whitespace and lowercase text for consistent pattern matching."""
     return re.sub(r"\s+", " ", (text or "").strip().lower())

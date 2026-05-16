@@ -10,10 +10,18 @@ is_complete(state)                  True when all required fields are collected.
 from typing import Any, Dict, List, Optional, Tuple
 
 from .assistant import choose_next_field, generate_assistant_message, stream_assistant_message
-from .classification import classify_report_with_ai
+from .classification import (
+    classify_report_with_ai,
+    infer_issue_type_from_collected,
+    is_category_allowed_for_issue_type,
+)
 from .clarification import evaluate_reply_quality
 from .extraction import extract_fields
-from .flow_engine import can_infer_category_and_severity, compute_missing_fields
+from .flow_engine import (
+    can_infer_category_and_severity,
+    compute_missing_fields,
+    has_valid_description,
+)
 from .inference_engine import infer_derived_fields
 from .question_flow import get_next_question
 
@@ -37,6 +45,7 @@ def create_initial_state() -> Dict[str, Any]:
         "expected_field": initial_missing[0] if initial_missing else None,
         "failed_attempts": 0,
         "pending_classification": None,
+        "pending_issue_type_arbitration": None,
         "needs_manual_issue_type": False,
         "classification_confirmed": False,
     }
@@ -385,6 +394,10 @@ def _advance_state(
         "turn": int(state.get("turn", 0)),
         "expected_field": expected_field,
         "failed_attempts": failed_attempts,
+        "pending_classification": state.get("pending_classification"),
+        "pending_issue_type_arbitration": state.get("pending_issue_type_arbitration"),
+        "needs_manual_issue_type": bool(state.get("needs_manual_issue_type", False)),
+        "classification_confirmed": bool(state.get("classification_confirmed", False)),
     }
 
     updated_state["collected"].update(turn_patch)
@@ -392,6 +405,22 @@ def _advance_state(
     inferred_patch = infer_derived_fields(updated_state["collected"])
     if inferred_patch:
         updated_state["collected"].update(inferred_patch)
+
+    # Stage 1 (early coarse routing): infer top-level issue_type as soon as we
+    # have a meaningful description, so users don't need to provide time/scope
+    # before seeing an initial domain decision.
+    current_issue_type = str(updated_state["collected"].get("issue_type", "")).strip().lower()
+    if current_issue_type not in {"cyber", "it_support"}:
+        inferred_issue_type = infer_issue_type_from_collected(
+            updated_state["collected"], allow_reclassification=True
+        )
+        if inferred_issue_type in {"cyber", "it_support"}:
+            updated_state["collected"]["issue_type"] = inferred_issue_type
+            inferred_patch["issue_type"] = inferred_issue_type
+        elif has_valid_description(updated_state["collected"]):
+            # Never leave issue_type unresolved once a usable description exists.
+            updated_state["collected"]["issue_type"] = "it_support"
+            inferred_patch["issue_type"] = "it_support"
 
     patch = {**turn_patch, **inferred_patch}
     removed_domain_fields = _prune_irrelevant_domain_fields(updated_state["collected"])
@@ -406,6 +435,18 @@ def _advance_state(
         and _ready_for_classification_confirmation(updated_state["collected"])
     ):
         classification = classify_report_with_ai(updated_state["collected"])
+        if classification.get("strong_arbitration_pending"):
+            updated_state["pending_issue_type_arbitration"] = {
+                "status": "pending",
+                "kind": classification.get("strong_arbitration_kind", "issue_type_only"),
+                "direct_issue_type": {
+                    "intent": classification.get("strong_arbitration_ai_intent", ""),
+                    "confidence": classification.get("issue_type_confidence", 0.0),
+                    "reason": classification.get("issue_type_reason", ""),
+                },
+                "local_issue_type": classification.get("strong_arbitration_local_issue_type", ""),
+                "collected_snapshot": dict(updated_state["collected"]),
+            }
         applied_classification = False
         for field_name in ("issue_type", "category"):
             value = classification.get(field_name)
@@ -626,3 +667,57 @@ def process_user_message_stream(user_message: str, state: Dict[str, Any]):
 def is_complete(state: Dict[str, Any]) -> bool:
     """Check whether all required fields have been collected."""
     return len(state.get("missing", [])) == 0
+
+
+def apply_issue_type_arbitration_result(
+    state: Dict[str, Any],
+    arbitration_result: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Apply a background issue-type arbitration result to conversation state."""
+    issue_type = str(arbitration_result.get("issue_type", "")).strip().lower()
+    if issue_type not in {"cyber", "it_support"}:
+        return state
+
+    updated_state = {
+        **state,
+        "collected": dict(state.get("collected", {})),
+        "messages": list(state.get("messages", [])),
+    }
+    collected = updated_state["collected"]
+    previous_issue_type = str(collected.get("issue_type", "")).strip().lower()
+    changed = previous_issue_type != issue_type
+
+    collected["issue_type"] = issue_type
+    if changed:
+        category = str(collected.get("category", "")).strip().lower()
+        if category and not is_category_allowed_for_issue_type(category, issue_type):
+            collected.pop("category", None)
+            collected.pop("category_other_text", None)
+            collected.pop("severity", None)
+        _prune_irrelevant_domain_fields(collected)
+        updated_state["classification_confirmed"] = False
+
+    pending = dict(updated_state.get("pending_issue_type_arbitration") or {})
+    pending.update(
+        {
+            "status": "completed",
+            "result_issue_type": issue_type,
+            "analysis": str(arbitration_result.get("analysis", "")).strip(),
+            "changed_issue_type": changed,
+        }
+    )
+    updated_state["pending_issue_type_arbitration"] = pending
+    updated_state["missing"] = compute_missing_fields(collected)
+    updated_state["deferred_fields"] = [
+        field
+        for field in updated_state.get("deferred_fields", [])
+        if field in updated_state["missing"]
+    ]
+    updated_state["active_missing"] = _active_missing(
+        updated_state["missing"], updated_state.get("deferred_fields", [])
+    )
+    updated_state["expected_field"] = choose_next_field(
+        collected, updated_state["active_missing"]
+    )
+    updated_state["failed_attempts"] = 0
+    return updated_state

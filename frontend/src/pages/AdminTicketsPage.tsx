@@ -37,11 +37,11 @@ ModuleRegistry.registerModules([
 const fmt = (v: unknown) =>
   String(v ?? "")
     .replaceAll("_", " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase()) || "Unassigned";
+    .replace(/\b\w/g, (c) => c.toUpperCase());
 
 const formatDateTimeShort = (value: unknown) => {
   const raw = String(value ?? "").trim();
-  if (!raw) return "Unassigned";
+  if (!raw) return "";
 
   const date = new Date(raw);
   if (Number.isNaN(date.getTime())) return raw;
@@ -68,8 +68,8 @@ type TicketRow = {
   attachments_count?: number;
   latest_comment?: unknown;
   last_comment?: unknown;
-  assigned_to_uid: string;
-  created_by_uid: string;
+  assigned_to_email: string;
+  created_by_email: string;
 };
 
 type AdminTicketsPageProps = {
@@ -87,10 +87,10 @@ const CORE_EXPORT_COLUMN_IDS = [
   "category",
   "severity",
   "status",
-  "created_by_uid",
+  "created_by_email",
   "created_at",
   "location",
-  "assigned_to_uid",
+  "assigned_to_email",
   "updated_at",
 ] as const;
 const OPTIONAL_EXPORT_COLUMN_IDS = ["short_description", "age"] as const;
@@ -108,7 +108,7 @@ function statusBadge(s: string) {
             ? "resolved"
             : "closed"
   }`;
-  return <span className={cls}>{s || "Unassigned"}</span>;
+  return <span className={cls}>{s || ""}</span>;
 }
 
 function severityBadge(s: string) {
@@ -116,7 +116,7 @@ function severityBadge(s: string) {
   const cls = `badge badge-${
     ["critical", "high", "medium", "low"].includes(key) ? key : "secondary"
   }`;
-  return <span className={cls}>{s || "Unassigned"}</span>;
+  return <span className={cls}>{s || ""}</span>;
 }
 
 type BadgeRendererProps = { value: string };
@@ -133,7 +133,7 @@ const IntakeModeRenderer = (props: BadgeRendererProps) => {
 
 const shortText = (value: unknown, maxLen: number = 90) => {
   const text = String(value ?? "").trim();
-  if (!text) return "Unassigned";
+  if (!text) return "";
   return text.length > maxLen ? `${text.slice(0, maxLen)}...` : text;
 };
 
@@ -144,7 +144,7 @@ const toEpochMs = (value: unknown): number | null => {
 
 const formatAge = (createdAt: unknown) => {
   const createdMs = toEpochMs(createdAt);
-  if (!createdMs) return "Unassigned";
+  if (!createdMs) return "";
 
   const diff = Math.max(0, Date.now() - createdMs);
   const totalHours = Math.floor(diff / 3600000);
@@ -160,7 +160,7 @@ const formatAge = (createdAt: unknown) => {
 const formatLocation = (row: TicketRow) => {
   const locationType = String(row.location_type ?? "").trim();
   const locationDetail = String(row.location_detail ?? "").trim();
-  if (!locationType && !locationDetail) return "Unassigned";
+  if (!locationType && !locationDetail) return "";
   if (!locationType) return locationDetail;
   if (!locationDetail) return fmt(locationType);
   return `${fmt(locationType)} - ${locationDetail}`;
@@ -201,8 +201,8 @@ function DetailPanel(props: ICellRendererParams<TicketRow>) {
     claimTicket?: (ticketId: string) => void;
   };
   const userLabels = context.userLabels || {};
-  const reportedBy = userLabels[row.created_by_uid] || row.created_by_uid || "Unassigned";
-  const assignedTo = userLabels[row.assigned_to_uid] || row.assigned_to_uid || "Unassigned";
+  const reportedBy = userLabels[row.created_by_email] || row.created_by_email || "";
+  const assignedTo = userLabels[row.assigned_to_email] || row.assigned_to_email || "";
 
   return (
     <div
@@ -257,7 +257,7 @@ function DetailPanel(props: ICellRendererParams<TicketRow>) {
         >
           Open Full Detail
         </button>
-        {!String(row.assigned_to_uid || "").trim() && (
+        {!String(row.assigned_to_email || "").trim() && (
           <button
             type="button"
             onClick={() => context.claimTicket?.(row.id)}
@@ -381,13 +381,13 @@ export default function AdminTicketsPage({
       const nextRows = collectedRows.slice(0, MAX_FETCH_ROWS);
       setRows(nextRows);
 
-      const uidSet = new Set<string>();
+      const emailSet = new Set<string>();
       nextRows.forEach((r) => {
-        if (r.created_by_uid) uidSet.add(r.created_by_uid);
-        if (r.assigned_to_uid) uidSet.add(r.assigned_to_uid);
+        if (r.created_by_email) emailSet.add(r.created_by_email);
+        if (r.assigned_to_email) emailSet.add(r.assigned_to_email);
       });
 
-      const labels = await resolveUserLabels([...uidSet]);
+      const labels = await resolveUserLabels([...emailSet]);
       setUserLabels(labels);
     } catch (e) {
       const msg = toUserFacingMessage(e, {
@@ -450,7 +450,7 @@ export default function AdminTicketsPage({
       if (activeFilter === "opening" && !OPENING.has(st)) return false;
       if (activeFilter === "finished" && !FINISHED.has(st)) return false;
       if (activeFilter === "highRisk" && !HIGH_RISK.has(sv)) return false;
-      if (activeFilter === "unassigned" && String(r.assigned_to_uid || "").trim()) return false;
+      if (activeFilter === "unassigned" && String(r.assigned_to_email || "").trim()) return false;
 
       if (statusGroupFilter === "finished" && !FINISHED.has(st)) return false;
       if (
@@ -474,8 +474,8 @@ export default function AdminTicketsPage({
       const q = search.trim().toLowerCase();
       if (!q) return true;
 
-      const creator = userLabels[r.created_by_uid] || r.created_by_uid || "";
-      const assignee = userLabels[r.assigned_to_uid] || r.assigned_to_uid || "";
+      const creator = userLabels[r.created_by_email] || r.created_by_email || "";
+      const assignee = userLabels[r.assigned_to_email] || r.assigned_to_email || "";
 
       return [r.ticket_id, r.issue_type, r.category, r.status, r.severity, creator, assignee]
         .join(" ")
@@ -686,7 +686,7 @@ export default function AdminTicketsPage({
       maxWidth: 180,
       pinned: "left",
       sortable: true,
-      cellRenderer: (params: ICellRendererParams<TicketRow>) => String(params.value || "").trim() || "Unassigned",
+      cellRenderer: (params: ICellRendererParams<TicketRow>) => String(params.value || "").trim(),
       cellClass: "ticket-id-cell",
       cellStyle: { color: "#334155" },
     },
@@ -734,22 +734,22 @@ export default function AdminTicketsPage({
       valueFormatter: ({ value }) => fmt(value),
     },
     {
-      field: "created_by_uid",
+      field: "created_by_email",
       headerName: "Reporter",
       flex: 1.1,
       minWidth: 115,
       sortable: true,
       cellStyle: { color: "#334155" },
-      valueFormatter: ({ value }) => userLabels[String(value)] || "Unassigned",
+      valueFormatter: ({ value }) => userLabels[String(value)] || String(value || "").trim(),
     },
     {
-      field: "assigned_to_uid",
+      field: "assigned_to_email",
       headerName: "Assigned To",
       flex: 1.1,
       minWidth: 115,
       sortable: true,
       cellStyle: { color: "#334155" },
-      valueFormatter: ({ value }) => userLabels[String(value)] || "Unassigned",
+      valueFormatter: ({ value }) => userLabels[String(value)] || String(value || "").trim(),
     },
     {
       colId: "location",
@@ -757,7 +757,7 @@ export default function AdminTicketsPage({
       flex: 1.2,
       minWidth: 160,
       sortable: false,
-      valueGetter: ({ data }) => (data ? formatLocation(data) : "Unassigned"),
+      valueGetter: ({ data }) => (data ? formatLocation(data) : ""),
       cellStyle: { color: "#334155" },
     },
     {
@@ -799,7 +799,7 @@ export default function AdminTicketsPage({
       filter: false,
       cellRenderer: (params: ICellRendererParams<TicketRow>) => {
         const row = params.data;
-        if (!row || String(row.assigned_to_uid || "").trim()) {
+        if (!row || String(row.assigned_to_email || "").trim()) {
           return <span className="text-xs text-slate-400">-</span>;
         }
 

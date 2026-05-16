@@ -11,7 +11,7 @@ import { formatFirestoreData } from "./FirestoreUtils";
 import type { AuditLog, FirestoreValue } from "./ServiceTypes";
 
 export async function logAuditEntry(params: {
-  uid: string;
+  actorEmail: string;
   action: string;
   ticketId: string;
   details?: Record<string, FirestoreValue>;
@@ -20,7 +20,7 @@ export async function logAuditEntry(params: {
   // Centralize audit writes so every ticket mutation produces the same metadata shape.
   const { serverTimestamp } = await import("firebase/firestore");
   await addDoc(collection(db, "audit_logs"), {
-    uid: params.uid,
+    actor_email: params.actorEmail,
     action: params.action,
     resource_type: "ticket",
     resource_id: params.ticketId,
@@ -76,7 +76,7 @@ export async function getAuditLogs(limitSize: number = 300): Promise<AuditLog[]>
  * Count audit logs created after `sinceMs` (milliseconds since epoch).
  * Uses raw Firestore Timestamp to compare — does NOT format the data.
  */
-export async function getUnreadAuditCount(sinceMs: number, excludeUid?: string): Promise<number> {
+export async function getUnreadAuditCount(sinceMs: number, excludeActorEmail?: string): Promise<number> {
   try {
     const auditQuery = query(
       collection(db, "audit_logs"),
@@ -86,7 +86,7 @@ export async function getUnreadAuditCount(sinceMs: number, excludeUid?: string):
     const snapshot = await getDocs(auditQuery);
     const raw = snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as AuditLog[];
     return raw.filter((log) => {
-      if (excludeUid && String(log.uid || "") === excludeUid) {
+      if (excludeActorEmail && String(log.actor_email || "") === excludeActorEmail) {
         return false;
       }
       const ts = log.created_at;

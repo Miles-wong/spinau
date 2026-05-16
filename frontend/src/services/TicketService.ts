@@ -31,14 +31,14 @@ import { getCategoryOptionsByIssueType } from "../constants/incidentSchema";
 const ADMIN_EDITABLE_FIELDS = [
   "issue_type",
   "status",
-  "assigned_to_uid",
+  "assigned_to_email",
   "assigned_to_name",
   "category",
   "severity",
   "closure_summary",
   "lessons_learned",
   "closed_at",
-  "closed_by_uid",
+  "closed_by_email",
   "duplicate_of_ticket_id",
   "related_ticket_ids",
 ] as const;
@@ -46,14 +46,14 @@ const ADMIN_EDITABLE_FIELDS = [
 const ADMIN_FIELD_HINT_LABELS: Record<(typeof ADMIN_EDITABLE_FIELDS)[number], string> = {
   issue_type: "issue type",
   status: "status",
-  assigned_to_uid: "assignee",
+  assigned_to_email: "assignee",
   assigned_to_name: "assignee name",
   category: "category",
   severity: "severity",
   closure_summary: "closure",
   lessons_learned: "lessons",
   closed_at: "closed time",
-  closed_by_uid: "closed by",
+  closed_by_email: "closed by",
   duplicate_of_ticket_id: "duplicate link",
   related_ticket_ids: "related tickets",
 };
@@ -83,7 +83,7 @@ function buildAdminUpdateHint(
     if (key === "category") {
       return `category changed to ${toHintValue(after)}`;
     }
-    if (key === "assigned_to_uid") {
+    if (key === "assigned_to_email") {
       return "assignee was updated";
     }
     if (key === "assigned_to_name") {
@@ -154,6 +154,7 @@ const ALLOWED_TICKET_FIELDS = [
   "phone_number",
   "contact_email",
   "needs_triage_review",
+  "source",
 ] as const;
 
 const REPORTER_EDITABLE_MISSING_FIELDS = [
@@ -325,8 +326,7 @@ async function uploadAttachmentDocument(
     download_url: downloadUrl,
     content_type: file.type,
     size: file.size,
-    uploaded_by_uid: uploadedByUid,
-    uploaded_by_email: uploadedByEmail || "",
+    uploaded_by_email: uploadedByEmail || uploadedByUid,
     uploaded_at: serverTimestamp(),
   };
 
@@ -347,7 +347,6 @@ async function uploadAttachmentDocument(
     download_url: payload.download_url,
     content_type: payload.content_type,
     size: payload.size,
-    uploaded_by_uid: payload.uploaded_by_uid,
     uploaded_by_email: payload.uploaded_by_email,
     uploaded_at: payload.uploaded_at as unknown as FirestoreValue,
   };
@@ -356,12 +355,12 @@ async function uploadAttachmentDocument(
 async function uploadAttachments(
   ticketId: string,
   attachmentFiles: File[],
-  created_by_uid: string
+  createdByEmail: string
 ): Promise<{ uploadedCount: number; failedCount: number; warning?: string }> {
   // Upload all files concurrently so wall-clock time scales with the largest
   // single file rather than the sum of all files.
   const results = await Promise.allSettled(
-    attachmentFiles.map((file) => uploadAttachmentDocument(ticketId, file, created_by_uid))
+    attachmentFiles.map((file) => uploadAttachmentDocument(ticketId, file, createdByEmail, createdByEmail))
   );
 
   const uploadedCount = results.filter((r) => r.status === "fulfilled").length;
@@ -399,9 +398,9 @@ function _formatTicketRows(data: TicketDoc[]): TicketRow[] {
       location_type: ticket.location_type || "",
       location_detail: ticket.location_detail || "",
       last_update_hint: typeof ticket.last_update_hint === "string" ? ticket.last_update_hint : "",
-      created_by_uid: ticket.created_by_uid || "",
-      updated_by_uid: ticket.updated_by_uid || "",
-      assigned_to_uid: ticket.assigned_to_uid || "",
+      created_by_email: ticket.created_by_email || "",
+      updated_by_email: ticket.updated_by_email || "",
+      assigned_to_email: ticket.assigned_to_email || "",
       created_at: typeof createdAtValue === "string" ? createdAtValue : "",
       updated_at: typeof updatedAtValue === "string" ? updatedAtValue : "",
       updated_at_ms:
@@ -416,14 +415,14 @@ function _formatTicketRows(data: TicketDoc[]): TicketRow[] {
 
 export async function getTickets(options?: {
   pageSize?: number;
-  createdByUid?: string;
+  createdByEmail?: string;
   cursor?: QueryDocumentSnapshot<DocumentData> | null;
 }) {
   const pageSize = options?.pageSize ?? 100;
 
   try {
     const constraints: QueryConstraint[] = [];
-    if (options?.createdByUid) constraints.push(where("created_by_uid", "==", options.createdByUid));
+    if (options?.createdByEmail) constraints.push(where("created_by_email", "==", options.createdByEmail));
     constraints.push(orderBy("created_at", "desc"));
     if (options?.cursor) constraints.push(startAfter(options.cursor));
     constraints.push(limit(pageSize));
@@ -440,31 +439,9 @@ export async function getTickets(options?: {
       nextCursor,
     };
   } catch (error) {
-    // Composite index may not be deployed yet. Fall back to client-side filtering
-    // until `firebase deploy --only firestore:indexes` is run.
-    if (String(error).includes("failed-precondition") && options?.createdByUid) {
-      logger.warn("getTickets composite index missing — falling back to client-side filter", { error: String(error) });
-      try {
-        const fallbackQuery = query(
-          collection(db, "tickets"),
-          orderBy("created_at", "desc"),
-          ...(options?.cursor ? [startAfter(options.cursor)] : []),
-          limit(pageSize)
-        );
-        const snapshot = await getDocs(fallbackQuery);
-        const data = (snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as TicketDoc[])
-          .filter((t) => t.created_by_uid === options.createdByUid);
-        const nextCursor = snapshot.docs.length > 0 ? snapshot.docs[snapshot.docs.length - 1] : null;
-        return {
-          rows: _formatTicketRows(data),
-          total: data.length,
-          hasMore: snapshot.docs.length === pageSize,
-          nextCursor,
-        };
-      } catch (fallbackError) {
-        logger.error("Error in getTickets fallback", { error: String(fallbackError) });
-        throw fallbackError;
-      }
+    if (String(error).includes("failed-precondition") && options?.createdByEmail) {
+      logger.error("getTickets composite index missing for reporter email query", { error: String(error) });
+      throw new Error("Ticket list index is not ready. Please deploy the Firestore indexes and try again.");
     }
     logger.error("Error in getTickets", { error: String(error) });
     throw error;
@@ -483,14 +460,6 @@ export async function getTicketDetail(ticketId: string) {
   }
 }
 
-export async function getSimilarTickets(ticketId: string): Promise<{
-  similar_tickets: import("./TicketValidationService").SimilarTicketResult[];
-  suggested_action: string;
-  ai_summary: string;
-}> {
-  return callBackendAPI(`/api/tickets/${ticketId}/similar`, "GET");
-}
-
 export async function createTicket(
   ticketData: CreateTicketInput
 ): Promise<{ docId: string; ticketId: string; attachmentUploadPending: boolean }> {
@@ -503,8 +472,8 @@ export async function createTicket(
   let customTicketId = "";
 
   try {
-    if (!ticketData.created_by_uid) {
-      throw new Error("created_by_uid is required");
+    if (!ticketData.created_by_email) {
+      throw new Error("created_by_email is required");
     }
 
     const attachmentFiles = ticketData.attachments || [];
@@ -523,7 +492,7 @@ export async function createTicket(
       }
     }
 
-    // Whitelist to prevent injection into sensitive fields like status/assigned_to_uid/etc.
+    // Whitelist to prevent injection into sensitive fields like status/assigned_to_email/etc.
     const cleanData = pickAllowed(ticketData, ALLOWED_TICKET_FIELDS);
 
     const ticketRef = doc(collection(db, "tickets"));
@@ -536,10 +505,11 @@ export async function createTicket(
       ...cleanData,
 
       // system-controlled fields (always overwritten here)
-      created_by_uid: ticketData.created_by_uid,
-      updated_by_uid: ticketData.created_by_uid,
+      created_by_email: ticketData.created_by_email,
+      updated_by_email: ticketData.created_by_email,
       status: "open",
-      assigned_to_uid: null,
+      assigned_to_email: null,
+      source: ticketData.source || "manual",
 
       ticket_id: customTicketId,
       created_at: serverTimestamp(),
@@ -564,7 +534,7 @@ export async function createTicket(
     // 2) upload attachments in the background (optional)
     // Attachment work must not delay the success response.
     if (attachmentFiles.length > 0) {
-      void uploadAttachments(ticketRef.id, attachmentFiles, ticketData.created_by_uid)
+      void uploadAttachments(ticketRef.id, attachmentFiles, ticketData.created_by_email)
         .then((result) => {
           logger.info("createTicket background attachment upload summary", {
             ticketId: customTicketId,
@@ -614,7 +584,7 @@ export async function createTicket(
 export async function updateTicketStatus(
   ticketId: string,
   status: string,
-  updatedByUid: string
+  updatedByEmail: string
 ) {
   try {
     const statusLabel = String(status || "")
@@ -626,7 +596,7 @@ export async function updateTicketStatus(
       status,
       last_update_hint: `status changed to ${statusLabel || "Updated"}`,
       updated_at: serverTimestamp() as unknown as FirestoreValue,
-      updated_by_uid: updatedByUid,
+      updated_by_email: updatedByEmail,
     };
 
     try {
@@ -639,7 +609,7 @@ export async function updateTicketStatus(
     }
 
     await logAuditEntry({
-      uid: updatedByUid,
+      actorEmail: updatedByEmail,
       action: "update_ticket_status",
       ticketId,
       details: { status },
@@ -659,7 +629,7 @@ export async function updateTicketStatus(
 export async function updateTicketAdminFields(
   ticketId: string,
   updates: Record<string, FirestoreValue>,
-  updatedByUid: string
+  updatedByEmail: string
 ) {
   try {
     const snapshot = await getDoc(doc(db, "tickets", ticketId));
@@ -668,7 +638,7 @@ export async function updateTicketAdminFields(
 
     const payload: Record<string, FirestoreValue> = {
       updated_at: serverTimestamp() as unknown as FirestoreValue,
-      updated_by_uid: updatedByUid,
+      updated_by_email: updatedByEmail,
     };
 
     // Sanitize: clear child detail fields when the parent boolean is falsy.
@@ -715,28 +685,41 @@ export async function updateTicketAdminFields(
     }
 
     const nextStatus = String((payload.status ?? current.status ?? "") as unknown).trim().toLowerCase();
-    const nextAssignee = payload.assigned_to_uid ?? current.assigned_to_uid;
+    const prevStatus = String((current.status ?? "") as unknown).trim().toLowerCase();
+    const nextAssignee = Object.prototype.hasOwnProperty.call(payload, "assigned_to_email")
+      ? payload.assigned_to_email
+      : current.assigned_to_email;
     const hasAssignee = typeof nextAssignee === "string"
       ? nextAssignee.trim().length > 0
       : nextAssignee !== null && nextAssignee !== undefined;
 
     // Auto transition rule: Open + assignee => Assigned.
-    // Do not auto-revert when assignee is later cleared.
     if (nextStatus === "open" && hasAssignee) {
-      const prevStatus = String((current.status ?? "") as unknown).trim().toLowerCase();
       payload.status = "assigned";
       if (prevStatus !== "assigned") {
         changedFields.status = { before: current.status ?? null, after: "assigned" };
       }
     }
 
+    // Auto transition rule: Assigned + assignee removed => Open.
+    if (nextStatus === "assigned" && !hasAssignee) {
+      payload.status = "open";
+      if (prevStatus !== "open") {
+        changedFields.status = { before: current.status ?? null, after: "open" };
+      }
+    }
+
+    const effectiveStatus = String((payload.status ?? current.status ?? "") as unknown)
+      .trim()
+      .toLowerCase();
+
     // Auto resolution metadata when a ticket enters resolved state.
-    if (nextStatus === "resolved") {
+    if (effectiveStatus === "resolved") {
       if (!("closed_at" in payload) || !payload.closed_at) {
         payload.closed_at = serverTimestamp() as unknown as FirestoreValue;
       }
-      if (!("closed_by_uid" in payload) || !payload.closed_by_uid) {
-        payload.closed_by_uid = updatedByUid;
+      if (!("closed_by_email" in payload) || !payload.closed_by_email) {
+        payload.closed_by_email = updatedByEmail;
       }
     }
 
@@ -757,7 +740,7 @@ export async function updateTicketAdminFields(
     }
 
     await logAuditEntry({
-      uid: updatedByUid,
+      actorEmail: updatedByEmail,
       action: "admin_update_ticket",
       ticketId,
       details: {
@@ -767,16 +750,20 @@ export async function updateTicketAdminFields(
     });
 
     if (Object.keys(changedFields).length > 0) {
-      const assignedToChanged = "assigned_to_uid" in changedFields;
-      const nextAssignedToUid = String((payload.assigned_to_uid ?? current.assigned_to_uid ?? "") as unknown);
+      const assignedToChanged = "assigned_to_email" in changedFields;
+      const nextAssignedToEmail = String(
+        (Object.prototype.hasOwnProperty.call(payload, "assigned_to_email")
+          ? payload.assigned_to_email
+          : current.assigned_to_email ?? "") as unknown
+      );
 
       notifyTicketEventInBackground({
         eventType: assignedToChanged ? "ticket_assigned" : "ticket_admin_updated",
         ticketId,
         metadata: {
           changed_fields: Object.keys(changedFields),
-          previous_assigned_to_uid: current.assigned_to_uid ?? "",
-          assigned_to_uid: nextAssignedToUid,
+          previous_assigned_to_email: current.assigned_to_email ?? "",
+          assigned_to_email: nextAssignedToEmail,
           assigned_to_name: payload.assigned_to_name ?? current.assigned_to_name ?? "",
           status: payload.status ?? current.status ?? "",
         },
@@ -791,7 +778,7 @@ export async function updateTicketAdminFields(
 export async function updateTicketReporterMissingFields(
   ticketId: string,
   updates: Record<string, FirestoreValue>,
-  updatedByUid: string
+  updatedByEmail: string
 ) {
   try {
     const ticketRef = doc(db, "tickets", ticketId);
@@ -799,13 +786,13 @@ export async function updateTicketReporterMissingFields(
     if (!snapshot.exists()) throw new Error("Ticket not found");
 
     const current = { id: snapshot.id, ...snapshot.data() } as TicketDoc;
-    if (current.created_by_uid !== updatedByUid) {
+    if (current.created_by_email !== updatedByEmail) {
       throw new Error("You can only update your own ticket");
     }
 
     const payload: Record<string, FirestoreValue> = {
       updated_at: serverTimestamp() as unknown as FirestoreValue,
-      updated_by_uid: updatedByUid,
+      updated_by_email: updatedByEmail,
     };
 
     const changedFields: string[] = [];
@@ -843,7 +830,7 @@ export async function updateTicketReporterMissingFields(
     }
 
     await logAuditEntry({
-      uid: updatedByUid,
+      actorEmail: updatedByEmail,
       action: "reporter_complete_ticket",
       ticketId,
       details: {
@@ -867,7 +854,7 @@ export async function updateTicketReporterMissingFields(
 export async function claimTicket(ticketId: string): Promise<{
   claimed: boolean;
   ticket_id?: string;
-  assigned_to_uid?: string;
+  assigned_to_email?: string;
   assigned_to_name?: string;
   status?: string;
 }> {

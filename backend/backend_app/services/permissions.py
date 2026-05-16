@@ -33,57 +33,57 @@ PERMISSIONS = {
 }
 
 
-def has_permission(uid: str, permission: str) -> bool:
+def has_permission(email: str, permission: str) -> bool:
     """
     Check if user has specific permission.
     
     Args:
-        uid: Firebase user ID
+        email: Authenticated user email
         permission: Permission name
     
     Returns:
         bool: True if user has permission
     """
-    role = get_user_role(uid)
+    role = get_user_role(email)
     has_perm = permission in PERMISSIONS.get(role, set())
-    logger.info("Permission check", uid=uid, permission=permission, role=role, allowed=has_perm)
+    logger.info("Permission check", email=email, permission=permission, role=role, allowed=has_perm)
     return has_perm
 
 
-def can_create_ticket(uid: str) -> bool:
+def can_create_ticket(email: str) -> bool:
     """Check if user can create a ticket."""
-    can_create = has_permission(uid, "create_ticket")
-    logger.info("Create-ticket permission evaluated", uid=uid, allowed=can_create)
+    can_create = has_permission(email, "create_ticket")
+    logger.info("Create-ticket permission evaluated", email=email, allowed=can_create)
     return can_create
 
 
-def can_view_ticket(uid: str, ticket_created_by_uid: str) -> bool:
+def can_view_ticket(email: str, ticket_created_by_email: str) -> bool:
     """
     Check if user can view a specific ticket.
     
     - Admin can see all tickets
     - Reporter can only see own tickets
     """
-    role = get_user_role(uid)
+    role = get_user_role(email)
     
     if role == ROLE_ADMIN:
         return True
     
     # Reporter can only see own tickets
-    return uid == ticket_created_by_uid
+    return email == ticket_created_by_email
 
 
-def can_update_ticket(uid: str) -> bool:
+def can_update_ticket(email: str) -> bool:
     """Check if user can update a ticket (only admin)."""
-    return has_permission(uid, "update_ticket_status")
+    return has_permission(email, "update_ticket_status")
 
 
-def enforce_rate_limit(uid: str, action: str = "create_ticket", limit: int = 5, window: int = 60) -> None:
+def enforce_rate_limit(email: str, action: str = "create_ticket", limit: int = 5, window: int = 60) -> None:
     """
     Enforce rate limit - raise exception if exceeded.
     
     Args:
-        uid: User ID
+        email: Authenticated user email
         action: Action name
         limit: Max actions in window (default: 5)
         window: Time window in seconds (default: 60)
@@ -91,7 +91,7 @@ def enforce_rate_limit(uid: str, action: str = "create_ticket", limit: int = 5, 
     Raises:
         Exception: If rate limit exceeded
     """
-    if not check_rate_limit(uid, action, limit=limit, window_seconds=window):
+    if not check_rate_limit(email, action, limit=limit, window_seconds=window):
         raise Exception(
             f"Rate limit exceeded: maximum {limit} {action} per {window} seconds"
         )

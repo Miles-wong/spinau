@@ -1,8 +1,8 @@
 """Authentication middleware.
 
 Provides the ``require_auth`` decorator that verifies Firebase ID Tokens
-from the ``Authorization: Bearer <token>`` header and injects ``g.uid`` /
-``g.email`` into the Flask request context for downstream handlers.
+from the ``Authorization: Bearer <token>`` header and injects ``g.email``
+(normalized lowercase) into the Flask request context.
 """
 
 from functools import wraps
@@ -28,8 +28,9 @@ def require_auth(fn):
         try:
             token = auth_header.split(" ", 1)[1].strip()
             claims = verify_id_token(token)
-            g.uid = claims.get("uid") or claims.get("sub")
-            g.email = claims.get("email", "")
+            g.email = str(claims.get("email", "")).strip().lower()
+            if not g.email:
+                return jsonify({"error": "Authenticated account is missing an email"}), 401
         except Exception as exc:
             logger.warning("Token verification failed", exc_info=exc)
             return jsonify({"error": "Token verification failed"}), 401

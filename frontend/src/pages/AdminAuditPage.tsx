@@ -159,7 +159,7 @@ export default function AdminAuditPage({ user, role, onLogout }: AdminAuditPageP
       const uidSet = new Set<string>();
       const ticketIds = new Set<string>();
       data.forEach((log) => {
-        if (log.uid) uidSet.add(String(log.uid));
+        if (log.actor_email) uidSet.add(String(log.actor_email));
         if (log.resource_id) ticketIds.add(String(log.resource_id));
       });
 
@@ -228,12 +228,12 @@ export default function AdminAuditPage({ user, role, onLogout }: AdminAuditPageP
 
     const next = logs.filter((log) => {
       if (actionFilter !== "all" && String(log.action || "") !== actionFilter) return false;
-      if (actorFilter !== "all" && String(log.uid || "") !== actorFilter) return false;
+      if (actorFilter !== "all" && String(log.actor_email || "") !== actorFilter) return false;
       const createdMs = Date.parse(String(log.created_at || ""));
       if (rangeStartMs > 0 && (isNaN(createdMs) || createdMs < rangeStartMs)) return false;
       if (!key) return true;
-      const actorLabel = userLabels[String(log.uid || "")] || String(log.uid || "");
-      const haystack = [String(log.action || ""), String(log.uid || ""), actorLabel, String(log.resource_id || ""), JSON.stringify(log.details || {})].join(" ").toLowerCase();
+      const actorLabel = userLabels[String(log.actor_email || "")] || String(log.actor_email || "");
+      const haystack = [String(log.action || ""), String(log.actor_email || ""), actorLabel, String(log.resource_id || ""), JSON.stringify(log.details || {})].join(" ").toLowerCase();
       return haystack.includes(key);
     });
 
@@ -290,7 +290,7 @@ export default function AdminAuditPage({ user, role, onLogout }: AdminAuditPageP
   }, [logs]);
 
   const actionOptions = useMemo(() => [...new Set(logs.map((l) => String(l.action || "unknown")))].sort(), [logs]);
-  const actorOptions = useMemo(() => [...new Set(logs.map((l) => String(l.uid || "")).filter(Boolean))].sort(), [logs]);
+  const actorOptions = useMemo(() => [...new Set(logs.map((l) => String(l.actor_email || "")).filter(Boolean))].sort(), [logs]);
 
   const isNew = (log: AuditLog): boolean => {
     if (!newBeforeMs) return false;
@@ -313,7 +313,7 @@ export default function AdminAuditPage({ user, role, onLogout }: AdminAuditPageP
       "action_key",
       "action_label",
       "status",
-      "actor_uid",
+      "actor_email",
       "actor_name",
       "ticket_id",
       "category",
@@ -323,7 +323,7 @@ export default function AdminAuditPage({ user, role, onLogout }: AdminAuditPageP
 
     const lines = filteredLogs.map((log) => {
       const actionKey = String(log.action || "");
-      const uid = String(log.uid || "");
+      const actorEmail = String(log.actor_email || "");
       const ticketId = String(log.resource_id || "");
       const meta = ticketMeta[ticketId] || {};
       const detailsJson = JSON.stringify(log.details || {});
@@ -333,8 +333,8 @@ export default function AdminAuditPage({ user, role, onLogout }: AdminAuditPageP
         actionKey,
         ACTION_LABELS[actionKey] || actionKey,
         String(log.status || "success"),
-        uid,
-        userLabels[uid] || uid,
+        actorEmail,
+        userLabels[actorEmail] || actorEmail,
         ticketId,
         meta.category || "",
         meta.severity || "",
@@ -407,8 +407,8 @@ export default function AdminAuditPage({ user, role, onLogout }: AdminAuditPageP
             </select>
             <select value={actorFilter} onChange={(e) => setActorFilter(e.target.value)} className="toolbar-select rounded-md border border-slate-300 px-3 py-2 text-sm">
               <option value="all">All actors</option>
-              {actorOptions.map((uid) => (
-                <option key={uid} value={uid}>{userLabels[uid] || uid}</option>
+              {actorOptions.map((actorEmail) => (
+                <option key={actorEmail} value={actorEmail}>{userLabels[actorEmail] || actorEmail}</option>
               ))}
             </select>
             <select value={timeRange} onChange={(e) => setTimeRange(e.target.value as TimeRange)} className="toolbar-select rounded-md border border-slate-300 px-3 py-2 text-sm">
@@ -481,7 +481,7 @@ export default function AdminAuditPage({ user, role, onLogout }: AdminAuditPageP
             const action = String(log.action || "unknown");
             const badgeColor = ACTION_COLORS[action] || "bg-slate-700";
             const label = ACTION_LABELS[action] || action.replaceAll("_", " ");
-            const actor = userLabels[String(log.uid || "")] || String(log.uid || "-");
+            const actor = userLabels[String(log.actor_email || "")] || String(log.actor_email || "-");
             const ticketId = String(log.resource_id || "");
             const canNavigate = Boolean(ticketId && ticketId !== "-");
             const newEntry = isNew(log);

@@ -72,6 +72,10 @@ def get_required_ai_env_var(provider: str) -> str:
     return provider_key_map.get(provider, "OPENAI_API_KEY")
 
 
+def _default_allowed_origins() -> str:
+    return "http://localhost:5173,http://127.0.0.1:5173"
+
+
 def get_config_status() -> Dict:
     """
     Validate all critical configuration items.
@@ -100,6 +104,13 @@ def get_config_status() -> Dict:
         if not is_valid:
             errors.append(msg)
 
+    is_valid, msg = _check_env_var("MODEL_NAME", "LLM model id (EXTRACTION_MODEL / ASSISTANT_MODEL)")
+    checks["model_name"] = (is_valid, msg)
+    if not is_valid:
+        errors.append(
+            "missing MODEL_NAME (required — same variable read at import in backend_app.ai.ai)",
+        )
+
     if os.getenv("PORT", "").strip():
         checks["api_port"] = (True, "ok API port (from PORT)")
     else:
@@ -110,8 +121,15 @@ def get_config_status() -> Dict:
 
     is_valid, msg = _check_env_var("ALLOWED_ORIGINS", "CORS allowed origins")
     checks["cors"] = (is_valid, msg)
+    cors_raw = os.getenv("ALLOWED_ORIGINS", "").strip()
+    default_cors = _default_allowed_origins()
     if not is_valid:
         warnings.append(f"{msg} (using default)")
+    elif os.getenv("PORT", "").strip() and cors_raw == default_cors:
+        warnings.append(
+            "ALLOWED_ORIGINS is still localhost-only; set it to your production frontend "
+            "(e.g. https://YOUR_PROJECT.web.app) or browsers on Hosting will hit CORS errors",
+        )
 
     provider = get_model_provider()
     required_ai_env_var = get_required_ai_env_var(provider)
@@ -171,5 +189,5 @@ def get_api_port() -> int:
 
 def get_allowed_origins() -> List[str]:
     """Get CORS allowed origins."""
-    raw = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
+    raw = os.getenv("ALLOWED_ORIGINS", _default_allowed_origins())
     return [o.strip() for o in raw.split(",") if o.strip()]

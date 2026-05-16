@@ -8,10 +8,14 @@ REGION="australia-southeast2"
 REPO="cyber-backend"
 IMAGE_NAME="cyber-incident-api"
 SERVICE="${IMAGE_NAME}"
-FRONTEND_ORIGIN_HTTPS="https://spin-cyber.web.app,https://spin-cyber.firebaseapp.com"
+FRONTEND_ORIGIN_HTTPS="https://contry-project.web.app,https://contry-project.firebaseapp.com"
+# Required on Cloud Run (same as backend .env MODEL_NAME / MODEL_PROVIDER).
+MODEL_NAME="${MODEL_NAME:-gpt-4o-mini}"
+MODEL_PROVIDER="${MODEL_PROVIDER:-openai}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# deploy.sh lives at repo root; do not use SCRIPT_DIR/..
+REPO_ROOT="${SCRIPT_DIR}"
 BACKEND_DIR="${REPO_ROOT}/backend"
 
 TAG="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/${IMAGE_NAME}:$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo manual)"
@@ -38,7 +42,7 @@ gcloud run deploy "${SERVICE}" \
   --min-instances=0 \
   --max-instances=10 \
   --timeout=300 \
-  --set-env-vars="FIREBASE_PROJECT_ID=${PROJECT_ID},ALLOWED_ORIGINS=${FRONTEND_ORIGIN_HTTPS}" \
+  --set-env-vars="FIREBASE_PROJECT_ID=${PROJECT_ID},ALLOWED_ORIGINS=${FRONTEND_ORIGIN_HTTPS},MODEL_PROVIDER=${MODEL_PROVIDER},MODEL_NAME=${MODEL_NAME}" \
   --set-secrets="OPENAI_API_KEY=openai-api-key:latest"
 
 echo "Done. Set frontend VITE_API_URL to the Cloud Run URL (https://...run.app) and run:"

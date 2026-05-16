@@ -102,7 +102,7 @@ export default function App() {
 
       setRoleReady(false);
       try {
-        const nextRole = await getUserRole(user.uid);
+        const nextRole = await getUserRole((user.email || "").trim().toLowerCase());
         if (nextRole === "admin" || nextRole === "reporter") {
           setRole(nextRole);
         } else {

@@ -1,7 +1,7 @@
 """Notification persistence helpers.
 
 Notifications are stored as durable per-user documents under:
-    users/{uid}/notifications/{notification_id}
+    users/{email}/notifications/{notification_id}
 
 The frontend may still perform some ticket writes directly during the current
 transition, but notification creation is centralized here so future FCM/email
@@ -36,16 +36,18 @@ EVENT_TYPES = {
 
 
 def _as_text(value: Any, fallback: str = "") -> str:
+    """Coerce a value to a stripped string, returning fallback when empty."""
     text = str(value or "").strip()
     return text or fallback
 
 
 def _display_ticket_id(ticket_id: str, ticket_data: Dict[str, Any]) -> str:
+    """Return the human-readable ticket identifier, falling back to the doc ID."""
     return _as_text(ticket_data.get("ticket_id"), ticket_id)
 
 
-def list_admin_uids(limit: int = 200) -> List[str]:
-    """Return known admin UIDs from the users collection."""
+def list_admin_emails(limit: int = 200) -> List[str]:
+    """Return known admin emails from the users collection."""
     db = get_firestore_db()
     docs = (
         db.collection("users")
@@ -53,38 +55,38 @@ def list_admin_uids(limit: int = 200) -> List[str]:
         .limit(limit)
         .stream()
     )
-    return [doc.id for doc in docs]
+    return [_as_text((doc.to_dict() or {}).get("email"), doc.id) for doc in docs]
 
 
-def get_user_display_name(uid: str) -> str:
-    """Resolve a user-facing display label from users/{uid}."""
-    if not uid:
+def get_user_display_name(email: str) -> str:
+    """Resolve a user-facing display label from users/{email}."""
+    if not email:
         return "Someone"
 
     try:
         db = get_firestore_db()
-        doc = db.collection("users").document(uid).get()
+        doc = db.collection("users").document(email).get()
         if not doc.exists:
-            return uid
+            return email
 
         data = doc.to_dict() or {}
         return (
             _as_text(data.get("display_name"))
             or _as_text(data.get("name"))
             or _as_text(data.get("email"))
-            or uid
+            or email
         )
     except Exception:
-        logger.warning("Failed to resolve user display name", uid=uid)
-        return uid
+        logger.warning("Failed to resolve user display name", email=email)
+        return email
 
 
 def create_notification(
     *,
-    recipient_uid: str,
+    recipient_email: str,
     notification_type: str,
     ticket_id: str,
-    actor_uid: str,
+    actor_email: str,
     actor_display_name: Optional[str] = None,
     title: str,
     body: str,
@@ -95,11 +97,11 @@ def create_notification(
     """Create one notification document and return its id."""
     db = get_firestore_db()
     payload = {
-        "recipient_uid": recipient_uid,
+        "recipient_email": recipient_email,
         "type": notification_type,
         "ticket_id": ticket_id,
-        "actor_uid": actor_uid,
-        "actor_display_name": actor_display_name or get_user_display_name(actor_uid),
+        "actor_email": actor_email,
+        "actor_display_name": actor_display_name or get_user_display_name(actor_email),
         "title": title,
         "body": body,
         "created_at": firestore.SERVER_TIMESTAMP,
@@ -118,13 +120,13 @@ def create_notification(
 
     _write_time, doc_ref = (
         db.collection("users")
-        .document(recipient_uid)
+        .document(recipient_email)
         .collection("notifications")
         .add(payload)
     )
     logger.info(
         "Created notification",
-        recipient_uid=recipient_uid,
+        recipient_email=recipient_email,
         notification_id=doc_ref.id,
         notification_type=notification_type,
         ticket_id=ticket_id,
@@ -133,6 +135,11 @@ def create_notification(
 
 
 def _serialize_notification(doc) -> Dict[str, Any]:
+    """Convert a Firestore notification document into a JSON-serializable dict.
+
+    Datetime fields (created_at, read_at) are converted to ISO-8601 strings
+    so the response can be directly JSON-encoded by Flask.
+    """
     data = doc.to_dict() or {}
     created_at = data.get("created_at")
     read_at = data.get("read_at")
@@ -144,12 +151,12 @@ def _serialize_notification(doc) -> Dict[str, Any]:
     }
 
 
-def list_user_notifications(uid: str, limit: int = 20) -> List[Dict[str, Any]]:
+def list_user_notifications(email: str, limit: int = 20) -> List[Dict[str, Any]]:
     """Return recent notifications for one user."""
     db = get_firestore_db()
     docs = (
         db.collection("users")
-        .document(uid)
+        .document(email)
         .collection("notifications")
         .order_by("created_at", direction=firestore.Query.DESCENDING)
         .limit(limit)
@@ -158,10 +165,10 @@ def list_user_notifications(uid: str, limit: int = 20) -> List[Dict[str, Any]]:
     return [_serialize_notification(doc) for doc in docs]
 
 
-def mark_user_notifications_read(uid: str, notification_ids: Optional[List[str]] = None) -> int:
+def mark_user_notifications_read(email: str, notification_ids: Optional[List[str]] = None) -> int:
     """Mark selected notifications, or all recent unread notifications, as read."""
     db = get_firestore_db()
-    collection_ref = db.collection("users").document(uid).collection("notifications")
+    collection_ref = db.collection("users").document(email).collection("notifications")
     now = firestore.SERVER_TIMESTAMP
 
     if notification_ids:
@@ -188,13 +195,22 @@ def mark_user_notifications_read(uid: str, notification_ids: Optional[List[str]]
 
 
 def _format_changed_fields(fields: Any) -> str:
+    """Render a list of changed field names into a readable English phrase.
+
+    Examples:
+    - ["status"] → "status"
+    - ["status", "severity"] → "status and severity"
+    - ["status", "severity", "category"] → "status, severity, and category"
+
+    Falls back to "ticket details" when the list is empty or non-list.
+    """
     if not isinstance(fields, list):
         return "ticket details"
 
     labels = {
         "issue_type": "issue type",
         "status": "status",
-        "assigned_to_uid": "assignee",
+        "assigned_to_email": "assignee",
         "assigned_to_name": "assignee",
         "category": "category",
         "severity": "severity",
@@ -220,6 +236,11 @@ def _build_message(
     metadata: Dict[str, Any],
     actor_display_name: str,
 ) -> tuple[str, str]:
+    """Return a (title, body) string pair for the given notification event type.
+
+    Each supported event_type maps to a unique notification template.  Unknown
+    event types fall back to a generic "Ticket updated" message.
+    """
     display_id = _display_ticket_id(ticket_id, ticket_data)
     status = _as_text(metadata.get("status") or ticket_data.get("status"))
     assigned_to_name = _as_text(metadata.get("assigned_to_name") or ticket_data.get("assigned_to_name"))
@@ -243,21 +264,26 @@ def _build_message(
     return "Ticket updated", f"{actor_display_name} updated ticket {display_id}."
 
 
-def _unique_recipients(candidates: Iterable[str], actor_uid: str) -> List[str]:
+def _unique_recipients(candidates: Iterable[str], actor_email: str) -> List[str]:
+    """Deduplicate and filter a list of candidate recipient emails.
+
+    Removes blank strings, the actor themselves (they do not receive
+    their own action notification), and duplicate UIDs.
+    """
     seen: Set[str] = set()
     recipients: List[str] = []
-    for uid in candidates:
-        uid = _as_text(uid)
-        if not uid or uid == actor_uid or uid in seen:
+    for email in candidates:
+        email = _as_text(email)
+        if not email or email == actor_email or email in seen:
             continue
-        seen.add(uid)
-        recipients.append(uid)
+        seen.add(email)
+        recipients.append(email)
     return recipients
 
 
 def create_ticket_event_notifications(
     *,
-    actor_uid: str,
+    actor_email: str,
     event_type: str,
     ticket_doc_id: str,
     metadata: Optional[Dict[str, Any]] = None,
@@ -273,31 +299,31 @@ def create_ticket_event_notifications(
         raise ValueError("Ticket not found")
 
     ticket_data = snapshot.to_dict() or {}
-    owner_uid = _as_text(ticket_data.get("created_by_uid"))
-    assigned_to_uid = _as_text(ticket_data.get("assigned_to_uid"))
-    actor_role = get_user_role(actor_uid)
+    owner_email = _as_text(ticket_data.get("created_by_email"))
+    assigned_to_email = _as_text(ticket_data.get("assigned_to_email"))
+    actor_role = get_user_role(actor_email)
     metadata = metadata or {}
 
     if event_type == "ticket_created":
-        if actor_uid != owner_uid:
+        if actor_email != owner_email:
             raise PermissionError("Only the ticket owner can send this notification")
         # New unassigned tickets are broadcast to the admin triage pool. If a
         # ticket is ever created pre-assigned, notify only that assignee.
-        recipients = [assigned_to_uid] if assigned_to_uid else list_admin_uids()
+        recipients = [assigned_to_email] if assigned_to_email else list_admin_emails()
     elif event_type == "reporter_completed_fields":
-        if actor_uid != owner_uid:
+        if actor_email != owner_email:
             raise PermissionError("Only the ticket owner can send this notification")
         # Reporter-side updates after assignment belong to the assigned admin.
         # If still unassigned, all admins remain responsible for triage.
-        recipients = [assigned_to_uid] if assigned_to_uid else list_admin_uids()
+        recipients = [assigned_to_email] if assigned_to_email else list_admin_emails()
     elif event_type == "ticket_comment":
         if actor_role == "admin":
             # Admin comments are user-facing; notify the reporter.
-            recipients = [owner_uid]
-        elif actor_uid == owner_uid:
+            recipients = [owner_email]
+        elif actor_email == owner_email:
             # Reporter comments go to the assignee, or to the triage pool while
             # the ticket is still unassigned.
-            recipients = [assigned_to_uid] if assigned_to_uid else list_admin_uids()
+            recipients = [assigned_to_email] if assigned_to_email else list_admin_emails()
         else:
             raise PermissionError("You cannot notify for this ticket")
     elif event_type in {"ticket_status_changed", "ticket_admin_updated"}:
@@ -307,35 +333,35 @@ def create_ticket_event_notifications(
         # admin edits a ticket owned by an assigned admin, also notify the
         # assignee as an internal handoff signal. The actor never receives
         # their own notification.
-        recipients = [owner_uid]
-        if assigned_to_uid and actor_uid != assigned_to_uid:
-            recipients.append(assigned_to_uid)
+        recipients = [owner_email]
+        if assigned_to_email and actor_email != assigned_to_email:
+            recipients.append(assigned_to_email)
     elif event_type == "ticket_assigned":
         if actor_role != "admin":
             raise PermissionError("Only admins can send this notification")
-        next_assignee = _as_text(metadata.get("assigned_to_uid") or assigned_to_uid)
-        recipients = [owner_uid]
-        if next_assignee and next_assignee != actor_uid:
+        next_assignee = _as_text(metadata.get("assigned_to_email") or assigned_to_email)
+        recipients = [owner_email]
+        if next_assignee and next_assignee != actor_email:
             recipients.append(next_assignee)
     else:
         if actor_role != "admin":
             raise PermissionError("Only admins can send this notification")
         recipients = []
 
-    recipients = _unique_recipients(recipients, actor_uid)
+    recipients = _unique_recipients(recipients, actor_email)
     if not recipients:
         return []
 
-    actor_display_name = get_user_display_name(actor_uid)
+    actor_display_name = get_user_display_name(actor_email)
     title, body = _build_message(event_type, ticket_doc_id, ticket_data, metadata, actor_display_name)
     notification_ids: List[str] = []
-    for recipient_uid in recipients:
+    for recipient_email in recipients:
         notification_ids.append(
             create_notification(
-                recipient_uid=recipient_uid,
+                recipient_email=recipient_email,
                 notification_type=event_type,
                 ticket_id=ticket_doc_id,
-                actor_uid=actor_uid,
+                actor_email=actor_email,
                 actor_display_name=actor_display_name,
                 title=title,
                 body=body,
@@ -343,7 +369,7 @@ def create_ticket_event_notifications(
                     **metadata,
                     "actor_display_name": actor_display_name,
                     "ticket_display_id": _display_ticket_id(ticket_doc_id, ticket_data),
-                    "assigned_to_uid": assigned_to_uid,
+                    "assigned_to_email": assigned_to_email,
                     "ticket_status": _as_text(ticket_data.get("status")),
                     "issue_type": _as_text(ticket_data.get("issue_type")),
                     "category": _as_text(ticket_data.get("category")),

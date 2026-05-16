@@ -21,6 +21,7 @@ import MessageInput from "../components/MessageInput";
 import { validateAndClassify, logTicketCreated } from "../services/TicketValidationService";
 import { createTicket } from "../services/TicketService";
 import { auth } from "../firebase";
+import { getAuthToken } from "../services/AuthService";
 import { logger } from "../services/logger";
 import { toUserFacingMessage } from "../services/userFacingMessage";
 import { useToast } from "../components/toastContext";
@@ -32,6 +33,7 @@ import {
 } from "../services/ConversationWarmupService";
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
+const ACTIVE_CONVERSATION_STORAGE_KEY = "activeConversationId";
 import "./ReportIncidentChat.css";
 
 const PANEL_FOLLOW_UP: Record<string, { field: string; question: string }> = {
@@ -92,6 +94,7 @@ type JsonRecord = Record<string, unknown>;
 type ConversationInitResponse = {
   conversation_id: string;
   initial_message?: string;
+  messages?: Message[];
   collected?: CollectedData;
   missing?: string[];
   is_complete?: boolean;
@@ -242,6 +245,7 @@ export default function ReportIncidentChat({
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [submitSuccess, setSubmitSuccess] = useState(false);
+  const [isClearingConversation, setIsClearingConversation] = useState(false);
   const [nextHints, setNextHints] = useState<NextHints>({});
   const [attachments, setAttachments] = useState<File[]>([]);
   const [fieldSuggestions, setFieldSuggestions] = useState<Record<string, string>>({});
@@ -328,6 +332,7 @@ export default function ReportIncidentChat({
   // becomes invalid or expires on the backend.
   const resetConversationUI = (errorMessage: string) => {
     clearConversationWarmup();
+    window.localStorage.removeItem(ACTIVE_CONVERSATION_STORAGE_KEY);
     setConversationId(null);
     setCollected({});
     setMissing([]);
@@ -372,6 +377,7 @@ export default function ReportIncidentChat({
         const {
           conversation_id,
           initial_message,
+          messages: restoredMessages,
           collected: initialCollected,
           missing: initialMissing,
           is_complete: initialIsComplete,
@@ -379,11 +385,16 @@ export default function ReportIncidentChat({
         } = conversation as ConversationInitResponse;
 
         clearConversationWarmup();
+        window.localStorage.setItem(ACTIVE_CONVERSATION_STORAGE_KEY, conversation_id);
 
         setConversationId(conversation_id);
         setMessages((prev) => {
           const hasUserMessage = prev.some((msg) => msg.role === "user");
           if (hasUserMessage) return prev;
+
+          if (Array.isArray(restoredMessages) && restoredMessages.length > 0) {
+            return restoredMessages.filter((msg) => msg && typeof msg.content === "string");
+          }
 
           return [
             {
@@ -758,7 +769,7 @@ export default function ReportIncidentChat({
       // Build payload with ONLY truly collected fields.
       // Do NOT add default values - let backend handle missing fields with proper validation.
       const ticketData: Record<string, unknown> = {
-        created_by_uid: user.uid,
+        created_by_email: user.email || "",
         issue_type: resolvedIssueType,
         intake_mode: resolvedIssueType === "it_support" ? "standard" : "fast",
 
@@ -836,7 +847,7 @@ export default function ReportIncidentChat({
       const validation = await validateAndClassify(ticketData as Parameters<typeof validateAndClassify>[0]);
       if (validation.ticket_data && isRecord(validation.ticket_data)) {
         Object.assign(ticketData, validation.ticket_data);
-        ticketData.created_by_uid = user.uid;
+        ticketData.created_by_email = user.email || "";
         ticketData.attachments = attachments;
         ticketData.intake_mode =
           ticketData.issue_type === "it_support" ? "standard" : "fast";
@@ -844,6 +855,20 @@ export default function ReportIncidentChat({
 
       // Create the ticket record in Firestore.
       const { ticketId, docId, attachmentUploadPending } = await createTicket(ticketData as Parameters<typeof createTicket>[0]);
+      if (conversationId) {
+        try {
+          const idToken = await getAuthToken();
+          await fetch(`${API_BASE_URL}/api/conversation/${conversationId}`, {
+            method: "DELETE",
+            headers: {
+              Authorization: `Bearer ${idToken}`,
+            },
+          });
+        } catch {
+          // Ticket creation already succeeded; session cleanup can be best-effort.
+        }
+        window.localStorage.removeItem(ACTIVE_CONVERSATION_STORAGE_KEY);
+      }
 
       // Record ticket creation for audit or analytics purposes without blocking submit.
       void logTicketCreated({
@@ -1134,6 +1159,48 @@ export default function ReportIncidentChat({
   const submitMissingFields = getRequiredMissingFields(collected);
   const canSubmit = submitMissingFields.length === 0 && !submitSuccess;
 
+  const handleClearConversation = async () => {
+    setError("");
+    setIsClearingConversation(true);
+    try {
+      const currentConversationId =
+        conversationId || window.localStorage.getItem(ACTIVE_CONVERSATION_STORAGE_KEY);
+      if (currentConversationId) {
+        const idToken = await getAuthToken();
+        await fetch(`${API_BASE_URL}/api/conversation/${currentConversationId}`, {
+          method: "DELETE",
+          headers: {
+            Authorization: `Bearer ${idToken}`,
+          },
+        });
+      }
+
+      clearConversationWarmup();
+      window.localStorage.removeItem(ACTIVE_CONVERSATION_STORAGE_KEY);
+      setConversationId(null);
+      setCollected({});
+      setMissing([]);
+      setIsComplete(false);
+      setNextHints({});
+      setMessages([{ role: "assistant", content: INITIAL_ASSISTANT_MESSAGE }]);
+      setFieldSuggestions({});
+      setPostSkipRecollect(null);
+      showToast({
+        type: "success",
+        title: "Conversation cleared.",
+        message: "Started a fresh reporting session.",
+        durationMs: 2500,
+      });
+    } catch (err: unknown) {
+      setError(
+        toUserFacingMessage(err, {
+          fallback: "Unable to clear the conversation. Please try again.",
+        })
+      );
+    } finally {
+      setIsClearingConversation(false);
+    }
+  };
 
   return (
     <Layout user={user} role={role} onLogout={onLogout}>
@@ -1147,6 +1214,14 @@ export default function ReportIncidentChat({
           </div>
 
           <div className="header-submit-actions">
+            <button
+              onClick={() => void handleClearConversation()}
+              disabled={isClearingConversation || submitting || submitSuccess}
+              className="continue-collect-btn"
+              title="Clear current conversation and start over"
+            >
+              {isClearingConversation ? "Clearing..." : "Clear Conversation"}
+            </button>
             <button
               onClick={handleSubmitClick}
               disabled={submitting || submitSuccess}
